@@ -407,7 +407,86 @@ async def analyze_log(file: UploadFile = File(...)):
         "timeline": analyzer.timeline,
         "root_cause": analyzer.root_cause,
         "flight_story": analyzer.flight_story,
+        "compass_interference": getattr(analyzer, 'compass_interference', None),
+        "current_spikes": getattr(analyzer, 'current_spikes', None),
+        "motor_saturation": getattr(analyzer, 'motor_saturation', None),
+        "power_efficiency": getattr(analyzer, 'power_efficiency', None),
+        "baro_drift": getattr(analyzer, 'baro_drift', None),
+        "dual_compass": getattr(analyzer, 'dual_compass', None),
+        "alt_tracking": getattr(analyzer, 'alt_tracking', None),
+        "failsafe_events": getattr(analyzer, 'failsafe_events', None),
+        "fft_peaks": getattr(analyzer, 'fft_peaks', None),
     })
+
+
+@app.get("/api/csv/{job_id}")
+async def download_csv(job_id: str):
+    """분석 결과 CSV 다운로드"""
+    import csv, io
+    job_dir = UPLOAD_DIR / job_id
+    if not job_dir.exists():
+        return JSONResponse({"error": "job not found"}, status_code=404)
+    bins = list(job_dir.glob("*.bin")) + list(job_dir.glob("*.BIN"))
+    if not bins:
+        return JSONResponse({"error": "no bin file"}, status_code=404)
+
+    parser = LogParser(str(bins[0]))
+    analyzer = Analyzer(parser)
+    t0 = parser.t0()
+
+    # 시계열 CSV: 시간, GPS고도, 진동X/Y/Z, 배터리V, 전류A, Roll, Pitch
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(['time_s', 'gps_alt', 'gps_spd', 'gps_sats', 'baro_alt',
+                     'vibe_x', 'vibe_y', 'vibe_z', 'batt_v', 'batt_a',
+                     'roll', 'pitch', 'yaw', 'm1', 'm2', 'm3', 'm4'])
+
+    gps = parser.get('GPS')
+    for g in gps:
+        t = round(g['_ts'] - t0, 2)
+        writer.writerow([t, g.get('Alt',0), g.get('Spd',0),
+                         g.get('NSats', g.get('nSats',0)), '', '', '', '',
+                         '', '', '', '', '', '', '', '', ''])
+
+    csv_path = job_dir / "timeseries.csv"
+    with open(csv_path, 'w') as f:
+        f.write(output.getvalue())
+
+    return FileResponse(str(csv_path), filename=f"{bins[0].stem}_timeseries.csv",
+                        media_type="text/csv")
+
+
+@app.get("/api/json/{job_id}")
+async def download_json(job_id: str):
+    """전체 분석 결과 JSON 다운로드"""
+    job_dir = UPLOAD_DIR / job_id
+    if not job_dir.exists():
+        return JSONResponse({"error": "job not found"}, status_code=404)
+    bins = list(job_dir.glob("*.bin")) + list(job_dir.glob("*.BIN"))
+    if not bins:
+        return JSONResponse({"error": "no bin file"}, status_code=404)
+
+    parser = LogParser(str(bins[0]))
+    analyzer = Analyzer(parser)
+    s = analyzer.summary
+
+    result = _json_safe({
+        "filename": s['filename'],
+        "summary": {k: s[k] for k in ['dur_str','max_alt','max_spd','dist_m','v_min','v_max','i_max']},
+        "findings": [{"sev":f.sev,"title":f.title,"detail":f.detail,"fix":f.fix} for f in analyzer.findings],
+        "timeline": analyzer.timeline,
+        "root_cause": analyzer.root_cause,
+        "flight_story": analyzer.flight_story,
+        "power_efficiency": getattr(analyzer, 'power_efficiency', None),
+        "fft_peaks": getattr(analyzer, 'fft_peaks', None),
+    })
+
+    json_path = job_dir / "analysis.json"
+    with open(json_path, 'w', encoding='utf-8') as f:
+        json.dump(result, f, ensure_ascii=False, indent=2)
+
+    return FileResponse(str(json_path), filename=f"{bins[0].stem}_analysis.json",
+                        media_type="application/json")
 
 
 @app.get("/api/pdf/{job_id}")

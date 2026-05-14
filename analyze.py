@@ -113,6 +113,7 @@ class LogParser:
             'PARM','CMD','POS','RATE',
             'ESC','MOTB','POWR','MAG','MAG2',
             'NKF2','XKF2','PIDR','PIDP','PIDY',
+            'BARO','RSSI',
         }
         for t in types:
             self.data[t] = []
@@ -243,6 +244,16 @@ class Analyzer:
         self._ck_hover()
         self._ck_esc()
         self._ck_phases()
+        self._ck_compass_motor_interference()
+        self._ck_current_spikes()
+        self._ck_motor_saturation()
+        self._ck_power_efficiency()
+        self._ck_rc_signal()
+        self._ck_baro_drift()
+        self._ck_dual_compass()
+        self._ck_des_vs_act()
+        self._ck_failsafe_reconstruct()
+        self._ck_fft()
         if not any(f.sev!='OK' for f in self.findings):
             self._add('OK','전체 정상','심각한 문제 미발견')
 
@@ -965,6 +976,504 @@ class Analyzer:
                     detail_parts.append(f'{phase_kr.get(p, p)}: {phase_summary[p]:.0f}초 ({pct:.0f}%)')
             self._add('OK', f'비행 구간 분류 ({len(merged)}구간)',
                       ' | '.join(detail_parts))
+
+    # ── Feature 7: 컴퍼스-스로틀 간섭 분석 ──
+    def _ck_compass_motor_interference(self):
+        """MAG 자기장과 스로틀(RCOU) 상관계수 분석 — 모터 전자기 간섭 감지"""
+        mag = self.p.get('MAG')
+        rcou = self.p.get('RCOU')
+        if not mag or not rcou or len(mag) < 50 or len(rcou) < 50:
+            return
+
+        # MAG 자기장 크기
+        mag_ts = np.array([m['_ts'] for m in mag])
+        mag_field = np.array([np.sqrt(m.get('MagX',0)**2+m.get('MagY',0)**2+m.get('MagZ',0)**2)
+                              for m in mag])
+
+        # RCOU 평균 스로틀
+        rcou_ts = np.array([r['_ts'] for r in rcou])
+        rcou_avg = np.array([np.mean([r.get(f'C{i}',0) for i in range(1,5)]) for r in rcou])
+
+        # 시간 정렬 — MAG 타임스탬프에 RCOU 보간
+        thr_interp = np.interp(mag_ts, rcou_ts, rcou_avg)
+
+        # 유효 구간만 (모터 돌아가는 구간)
+        mask = thr_interp > 1100
+        if mask.sum() < 30:
+            return
+
+        mag_active = mag_field[mask]
+        thr_active = thr_interp[mask]
+
+        # 피어슨 상관계수
+        corr = np.corrcoef(mag_active, thr_active)[0, 1]
+        self.compass_interference = round(float(corr), 3)
+
+        detail = f'상관계수: {corr:.3f} (|r|>0.3이면 간섭 의심)'
+        if abs(corr) > 0.5:
+            self._add('FAIL', f'컴퍼스-모터 간섭 심각 (r={corr:.2f})',
+                      detail, '컴퍼스 위치 이격, 전원 케이블 트위스트, 외장 컴퍼스 사용')
+        elif abs(corr) > 0.3:
+            self._add('WARN', f'컴퍼스-모터 간섭 의심 (r={corr:.2f})',
+                      detail, '외장 컴퍼스 권장, MOT_COMP 파라미터 확인')
+        else:
+            self._add('OK', f'컴퍼스 간섭 양호 (r={corr:.2f})', detail)
+
+    # ── Feature 8: 전류 스파이크 감지 ──
+    def _ck_current_spikes(self):
+        """배터리 전류 급증 — 비정상 전력 소모 감지"""
+        batt = self.p.get('BAT') or self.p.get('BATT') or self.p.get('CURR')
+        if not batt or len(batt) < 50:
+            return
+
+        currs = np.array([b.get('Curr', b.get('CurrR', 0)) for b in batt])
+        ts = np.array([b['_ts'] for b in batt])
+        if not any(currs > 0):
+            return
+
+        # 이동평균 대비 스파이크 감지
+        window = min(20, len(currs) // 5)
+        if window < 3:
+            return
+        moving_avg = np.convolve(currs, np.ones(window)/window, mode='same')
+        spikes = []
+        t0 = self.p.t0()
+        for i in range(window, len(currs)-window):
+            if moving_avg[i] > 0 and currs[i] > moving_avg[i] * 2.0 and currs[i] > 5:
+                spikes.append({
+                    'ts': round(ts[i] - t0, 1),
+                    'curr': round(float(currs[i]), 1),
+                    'avg': round(float(moving_avg[i]), 1),
+                    'ratio': round(float(currs[i] / moving_avg[i]), 1),
+                })
+
+        # 근접 스파이크 병합 (5초)
+        merged = []
+        for s in spikes:
+            if merged and s['ts'] - merged[-1]['ts'] < 5:
+                if s['curr'] > merged[-1]['curr']:
+                    merged[-1] = s
+            else:
+                merged.append(s)
+
+        self.current_spikes = merged
+
+        if len(merged) > 3:
+            detail = '\n'.join(f'  {s["ts"]:.0f}초: {s["curr"]}A (평균 {s["avg"]}A의 {s["ratio"]}배)'
+                              for s in merged[:5])
+            self._add('WARN', f'전류 스파이크 {len(merged)}회 감지', detail,
+                      'ESC/모터 점검, 배선 접촉불량 확인')
+        elif len(merged) > 0:
+            s = merged[0]
+            self._add('OK', f'전류 스파이크 {len(merged)}회 (최대 {s["curr"]}A)',
+                      f'{s["ts"]:.0f}초 시점')
+
+    # ── Feature 9: 모터 포화 감지 ──
+    def _ck_motor_saturation(self):
+        """모터 PWM 상한(1950+) 지속 시간 — 추력 한계 도달 분석"""
+        rcou = self.p.get('RCOU')
+        if not rcou or len(rcou) < 50:
+            return
+
+        ts = np.array([r['_ts'] for r in rcou])
+        total_time = ts[-1] - ts[0]
+        if total_time <= 0:
+            return
+
+        sat_threshold = 1950
+        saturated_samples = 0
+        motor_sat = {i: 0 for i in range(1, 5)}
+
+        for r in rcou:
+            for i in range(1, 5):
+                val = r.get(f'C{i}', 0)
+                if val >= sat_threshold:
+                    motor_sat[i] += 1
+            if any(r.get(f'C{i}', 0) >= sat_threshold for i in range(1, 5)):
+                saturated_samples += 1
+
+        dt = total_time / len(rcou)  # 평균 샘플 간격
+        sat_time = saturated_samples * dt
+        sat_pct = saturated_samples / len(rcou) * 100
+
+        detail_parts = [f'M{i}: {motor_sat[i]}회' for i in range(1, 5) if motor_sat[i] > 0]
+        detail = f'포화 시간: {sat_time:.1f}초 ({sat_pct:.1f}%)\n' + ' | '.join(detail_parts) if detail_parts else f'포화 시간: {sat_time:.1f}초'
+
+        self.motor_saturation = {'pct': round(sat_pct, 1), 'time': round(sat_time, 1),
+                                  'by_motor': motor_sat}
+
+        if sat_pct > 10:
+            self._add('FAIL', f'모터 포화 심각 — {sat_pct:.1f}% ({sat_time:.0f}초)',
+                      detail, '과적재 확인, 프롭/모터 업그레이드, 비행 기동 완화')
+        elif sat_pct > 2:
+            self._add('WARN', f'모터 포화 감지 — {sat_pct:.1f}% ({sat_time:.0f}초)',
+                      detail, '추력 여유 확보 권장')
+        elif sat_pct > 0:
+            self._add('OK', f'모터 포화 미미 — {sat_pct:.1f}%', detail)
+
+    # ── Feature 10: 전력 효율 ──
+    def _ck_power_efficiency(self):
+        """Wh/km, Wh/min, 잔여 비행시간 추정"""
+        batt = self.p.get('BAT') or self.p.get('BATT') or self.p.get('CURR')
+        gps = self.p.get('GPS')
+        if not batt or not gps or len(batt) < 20:
+            return
+
+        s = self.summary
+        dur_sec = s.get('dur_sec', 0)
+        dist_m = s.get('dist_m', 0)
+        if dur_sec <= 0:
+            return
+
+        # 소비 전력 계산
+        volts = np.array([b.get('Volt', b.get('VoltR', 0)) for b in batt])
+        currs = np.array([b.get('Curr', b.get('CurrR', 0)) for b in batt])
+        ts = np.array([b['_ts'] for b in batt])
+
+        # 유효 데이터만
+        mask = (volts > 0) & (currs > 0)
+        if mask.sum() < 10:
+            return
+
+        # 전력 적분 (W·s → Wh)
+        power = volts[mask] * currs[mask]  # 와트
+        dt = np.diff(ts[mask])
+        dt = np.clip(dt, 0, 10)  # 이상치 제거
+        energy_ws = np.sum(power[1:] * dt)  # W·s
+        energy_wh = energy_ws / 3600
+
+        # mAh (비교용)
+        mah_used = s.get('mah', 0)
+        if mah_used <= 0:
+            # CurrTot에서 가져오기
+            currtot = [b.get('CurrTot', 0) for b in batt]
+            mah_used = max(currtot) if currtot else 0
+
+        dur_min = dur_sec / 60
+        efficiency = {}
+        efficiency['wh_total'] = round(energy_wh, 1)
+        efficiency['wh_per_min'] = round(energy_wh / dur_min, 2) if dur_min > 0 else 0
+        efficiency['mah_used'] = round(mah_used, 0)
+        if dist_m > 100:
+            efficiency['wh_per_km'] = round(energy_wh / (dist_m / 1000), 1)
+        efficiency['avg_power_w'] = round(float(np.mean(power)), 1)
+        efficiency['max_power_w'] = round(float(np.max(power)), 1)
+
+        # 잔여 비행시간 추정 (배터리 잔량 기반)
+        rem_pct = [b.get('RemPct', 0) for b in batt if b.get('RemPct', 0) > 0]
+        if rem_pct and efficiency['wh_per_min'] > 0:
+            last_rem = rem_pct[-1]
+            used_pct = 100 - last_rem
+            if used_pct > 5:
+                total_wh_capacity = energy_wh / (used_pct / 100)
+                remaining_wh = total_wh_capacity * (last_rem / 100)
+                remaining_min = remaining_wh / efficiency['wh_per_min']
+                efficiency['remaining_min'] = round(remaining_min, 1)
+                efficiency['battery_capacity_wh'] = round(total_wh_capacity, 1)
+
+        self.power_efficiency = efficiency
+
+        detail = f'소비: {energy_wh:.1f}Wh ({mah_used:.0f}mAh)\n'
+        detail += f'평균: {efficiency["avg_power_w"]}W, 최대: {efficiency["max_power_w"]}W\n'
+        detail += f'{efficiency["wh_per_min"]}Wh/min'
+        if 'wh_per_km' in efficiency:
+            detail += f', {efficiency["wh_per_km"]}Wh/km'
+        if 'remaining_min' in efficiency:
+            detail += f'\n잔여 비행시간 추정: {efficiency["remaining_min"]:.0f}분'
+
+        self._add('OK', f'전력 효율 — {efficiency["wh_per_min"]}Wh/min', detail)
+
+    # ── Feature 11: RC 신호 품질 ──
+    def _ck_rc_signal(self):
+        """RSSI 트렌드 + RC 신호 급락 감지"""
+        rssi_data = self.p.get('RSSI')
+        rcin = self.p.get('RCIN')
+        t0 = self.p.t0()
+
+        if rssi_data and len(rssi_data) > 10:
+            rssi_vals = [r.get('RXRSSI', r.get('Rx', 0)) for r in rssi_data]
+            rssi_vals = [v for v in rssi_vals if v > 0]
+            if rssi_vals:
+                min_rssi = min(rssi_vals)
+                avg_rssi = np.mean(rssi_vals)
+                if min_rssi < 50:
+                    self._add('WARN', f'RC 신호 약함 (RSSI 최저 {min_rssi:.0f})',
+                              f'평균 {avg_rssi:.0f}', '안테나 방향/위치 확인')
+                else:
+                    self._add('OK', f'RC 신호 양호 (RSSI 평균 {avg_rssi:.0f})',
+                              f'최저 {min_rssi:.0f}')
+                return
+
+        # RSSI 메시지 없으면 RCIN 채널 유효성으로 대체
+        if not rcin or len(rcin) < 30:
+            return
+
+        # RCIN 채널 값이 0으로 떨어지는 구간 = 신호 손실
+        dropouts = 0
+        for r in rcin:
+            ch3 = r.get('C3', r.get('Chan3', 0))
+            if ch3 == 0 or ch3 < 800:
+                dropouts += 1
+
+        dropout_pct = dropouts / len(rcin) * 100
+        if dropout_pct > 5:
+            self._add('WARN', f'RC 신호 손실 {dropout_pct:.1f}%',
+                      f'{dropouts}회 드롭아웃 / {len(rcin)}샘플',
+                      '수신기 점검, 안테나 위치 변경')
+        elif dropout_pct > 0:
+            self._add('OK', f'RC 신호 드롭아웃 {dropouts}회 ({dropout_pct:.1f}%)', '')
+
+    # ── Feature 12: 기압계 드리프트 ──
+    def _ck_baro_drift(self):
+        """BARO 고도 vs GPS 고도 편차 추적"""
+        baro = self.p.get('BARO')
+        gps = self.p.get('GPS')
+        if not baro or not gps or len(baro) < 30 or len(gps) < 30:
+            return
+
+        # GPS 고도 보간하여 BARO 타임스탬프에 맞춤
+        gps_ts = np.array([g['_ts'] for g in gps])
+        gps_alt = np.array([g.get('Alt', 0) for g in gps])
+        baro_ts = np.array([b['_ts'] for b in baro])
+        baro_alt = np.array([b.get('Alt', 0) for b in baro])
+
+        if not any(gps_alt > 0) or not any(baro_alt != 0):
+            return
+
+        # GPS 고도를 바로 타임스탬프에 보간
+        gps_interp = np.interp(baro_ts, gps_ts, gps_alt)
+
+        # 초기 오프셋 제거 (첫 10개 평균)
+        init_offset = np.mean(gps_interp[:10]) - np.mean(baro_alt[:10])
+        diff = (gps_interp - init_offset) - baro_alt
+
+        # 시간에 따른 드리프트 추세
+        drift_start = np.mean(diff[:len(diff)//10]) if len(diff) > 10 else 0
+        drift_end = np.mean(diff[-len(diff)//10:]) if len(diff) > 10 else 0
+        drift_total = drift_end - drift_start
+        max_diff = float(np.max(np.abs(diff)))
+
+        self.baro_drift = {'total_m': round(drift_total, 2), 'max_diff_m': round(max_diff, 2)}
+
+        if abs(drift_total) > 5 or max_diff > 10:
+            self._add('WARN', f'기압계 드리프트 감지 ({drift_total:+.1f}m)',
+                      f'BARO-GPS 최대 편차: {max_diff:.1f}m\n'
+                      f'시작→종료 드리프트: {drift_total:+.1f}m',
+                      '기압계 온도 보상 확인, EKF_ALT_SOURCE 점검')
+        else:
+            self._add('OK', f'기압계 안정 (드리프트 {drift_total:+.1f}m)',
+                      f'최대 편차: {max_diff:.1f}m')
+
+    # ── Feature 13: 듀얼 컴퍼스 일관성 ──
+    def _ck_dual_compass(self):
+        """MAG vs MAG2 자기장 편차 모니터링"""
+        mag1 = self.p.get('MAG')
+        mag2 = self.p.get('MAG2')
+        if not mag1 or not mag2 or len(mag1) < 30 or len(mag2) < 30:
+            return  # 듀얼 컴퍼스 아닌 기체 → 스킵
+
+        # 자기장 크기 비교
+        mag1_ts = np.array([m['_ts'] for m in mag1])
+        mag1_f = np.array([np.sqrt(m.get('MagX',0)**2+m.get('MagY',0)**2+m.get('MagZ',0)**2) for m in mag1])
+        mag2_ts = np.array([m['_ts'] for m in mag2])
+        mag2_f = np.array([np.sqrt(m.get('MagX',0)**2+m.get('MagY',0)**2+m.get('MagZ',0)**2) for m in mag2])
+
+        # 시간 정렬
+        mag2_interp = np.interp(mag1_ts, mag2_ts, mag2_f)
+        diff = np.abs(mag1_f - mag2_interp)
+        avg_diff = float(np.mean(diff))
+        max_diff = float(np.max(diff))
+
+        # 비율로도 확인
+        ratio = mag1_f / np.clip(mag2_interp, 1, None)
+        inconsistency = float(np.std(ratio))
+
+        self.dual_compass = {'avg_diff': round(avg_diff, 1), 'max_diff': round(max_diff, 1),
+                              'consistency': round(1 - inconsistency, 3)}
+
+        if avg_diff > 100 or max_diff > 200:
+            self._add('WARN', f'듀얼 컴퍼스 불일치 (평균 {avg_diff:.0f}, 최대 {max_diff:.0f})',
+                      f'MAG1 vs MAG2 자기장 크기 편차',
+                      '컴퍼스 재캘리브, 간섭원 확인, COMPASS_USE 설정')
+        else:
+            self._add('OK', f'듀얼 컴퍼스 일관 (편차 평균 {avg_diff:.0f})',
+                      f'최대 편차: {max_diff:.0f}')
+
+    # ── Feature 14: Desired vs Actual 위치/고도 ──
+    def _ck_des_vs_act(self):
+        """명령 고도 vs 실제 고도 추적 오차"""
+        ctun = self.p.get('CTUN')
+        if not ctun or len(ctun) < 50:
+            return
+
+        # DAlt(Desired Altitude) vs Alt(Actual Altitude)
+        dalt = np.array([c.get('DAlt', 0) for c in ctun])
+        alt = np.array([c.get('Alt', 0) for c in ctun])
+
+        # 유효 구간 (비행 중)
+        mask = alt > 1
+        if mask.sum() < 20:
+            return
+
+        err = np.abs(dalt[mask] - alt[mask])
+        rms_err = float(np.sqrt(np.mean(err**2)))
+        max_err = float(np.max(err))
+        avg_err = float(np.mean(err))
+
+        self.alt_tracking = {'rms': round(rms_err, 2), 'max': round(max_err, 2),
+                              'avg': round(avg_err, 2)}
+
+        detail = f'RMS 오차: {rms_err:.2f}m, 평균: {avg_err:.2f}m, 최대: {max_err:.2f}m'
+        if rms_err > 3:
+            self._add('WARN', f'고도 추적 부정확 (RMS {rms_err:.1f}m)',
+                      detail, 'PSC_POSZ_P, PSC_VELZ_P 게인 조정')
+        elif rms_err > 1:
+            self._add('OK', f'고도 추적 보통 (RMS {rms_err:.1f}m)', detail)
+        else:
+            self._add('OK', f'고도 추적 양호 (RMS {rms_err:.2f}m)', detail)
+
+    # ── Feature 15: 페일세이프 재구성 ──
+    def _ck_failsafe_reconstruct(self):
+        """에러/이벤트/MSG를 조합하여 페일세이프 트리거 원인 역추적"""
+        errs = self.summary['errors']
+        msgs = self.summary['msgs']
+        evts = self.summary['events']
+        t0 = self.p.t0()
+
+        # 페일세이프 관련 에러코드
+        fs_subsys = {5, 11, 12, 17, 22, 23, 24, 26}  # Radio, Fence, Battery, GCS, EKF 등
+        fs_events = []
+
+        for e in errs:
+            if e['ec'] == 0:
+                continue
+            info = lookup_err(e['sub'], e['ec'])
+            ei = info['error']
+            if e['sub'] in fs_subsys or 'failsafe' in ei.get('name', '').lower() or 'failsafe' in ei.get('desc', '').lower():
+                fs_events.append({
+                    'ts': round(e['t'] - t0, 1),
+                    'type': 'ERR',
+                    'subsys': info['subsystem'],
+                    'desc': ei.get('desc', f'코드 {e["ec"]}'),
+                    'cause': ei.get('cause', ''),
+                    'fix': ei.get('fix', ''),
+                })
+
+        # MSG에서 Failsafe 키워드 추출
+        for m in msgs:
+            txt = m['text']
+            if 'failsafe' in txt.lower() or 'fail safe' in txt.lower():
+                fs_events.append({
+                    'ts': round(m['t'] - t0, 1),
+                    'type': 'MSG',
+                    'subsys': 'Message',
+                    'desc': txt[:80],
+                    'cause': '',
+                    'fix': '',
+                })
+
+        if not fs_events:
+            return
+
+        # 시간순 정렬
+        fs_events.sort(key=lambda x: x['ts'])
+
+        # 근접 중복 제거
+        merged_fs = []
+        for fs in fs_events:
+            if merged_fs and abs(fs['ts'] - merged_fs[-1]['ts']) < 2 and fs['subsys'] == merged_fs[-1]['subsys']:
+                continue
+            merged_fs.append(fs)
+
+        self.failsafe_events = merged_fs
+
+        detail = '\n'.join(f'  [{fs["ts"]:.0f}초] {fs["subsys"]}: {fs["desc"]}'
+                          + (f'\n    원인: {fs["cause"]}' if fs["cause"] else '')
+                          for fs in merged_fs[:6])
+
+        self._add('WARN' if len(merged_fs) <= 2 else 'FAIL',
+                  f'페일세이프 이력 {len(merged_fs)}건',
+                  detail,
+                  merged_fs[0]['fix'] if merged_fs[0]['fix'] else '페일세이프 파라미터 점검')
+
+    # ── Feature 16: FFT 진동 주파수 분석 ──
+    def _ck_fft(self):
+        """IMU 가속도계 FFT — 공진 주파수 + 노치필터 제안"""
+        imu = self.p.get('IMU')
+        if not imu or len(imu) < 256:
+            return
+
+        # 샘플링 레이트 추정
+        ts = np.array([d['_ts'] for d in imu[:500]])
+        dt_arr = np.diff(ts)
+        dt_arr = dt_arr[dt_arr > 0]
+        if len(dt_arr) == 0:
+            return
+        dt_avg = float(np.median(dt_arr))
+        fs = 1.0 / dt_avg if dt_avg > 0 else 100
+
+        # 최대 4096 샘플 사용
+        n_samples = min(len(imu), 4096)
+        fft_results = {}
+
+        for ax_key, ax_name in [('AccX', 'X'), ('AccY', 'Y'), ('AccZ', 'Z')]:
+            vals = np.array([d.get(ax_key, 0) for d in imu[:n_samples]])
+            if len(vals) < 128:
+                continue
+
+            # DC 제거 + 해닝 윈도우
+            vals = vals - np.mean(vals)
+            window = np.hanning(len(vals))
+            fft_result = np.fft.rfft(vals * window)
+            freqs = np.fft.rfftfreq(len(vals), d=1.0/fs)
+            magnitude = np.abs(fft_result) * 2.0 / len(vals)
+
+            # 1Hz ~ Nyquist
+            mask = freqs >= 1.0
+            fft_results[ax_name] = {
+                'freqs': freqs[mask],
+                'magnitude': magnitude[mask],
+            }
+
+        if not fft_results:
+            return
+
+        # 각 축의 피크 주파수 찾기
+        peaks = {}
+        for ax, data in fft_results.items():
+            mag = data['magnitude']
+            freq = data['freqs']
+            if len(mag) < 5:
+                continue
+            # 상위 3개 피크
+            peak_indices = np.argsort(mag)[-3:][::-1]
+            peaks[ax] = [(round(float(freq[i]), 1), round(float(mag[i]), 4)) for i in peak_indices]
+
+        self.fft_peaks = peaks
+        self.fft_fs = round(fs, 1)
+
+        # 모든 축의 1위 피크 주파수
+        all_peaks = []
+        for ax, pk_list in peaks.items():
+            if pk_list:
+                all_peaks.append((ax, pk_list[0][0], pk_list[0][1]))
+
+        if not all_peaks:
+            return
+
+        dominant = max(all_peaks, key=lambda x: x[2])
+        detail = f'샘플링: {fs:.0f}Hz, {n_samples}샘플\n'
+        for ax, pk_list in peaks.items():
+            detail += f'  {ax}축: ' + ', '.join(f'{f:.0f}Hz({m:.3f})' for f, m in pk_list) + '\n'
+
+        # 프롭 회전 주파수 범위 (보통 50~200Hz)
+        dom_freq = dominant[1]
+        if dom_freq > 30 and dominant[2] > 0.5:
+            self._add('WARN', f'진동 피크 {dom_freq:.0f}Hz ({dominant[0]}축)',
+                      detail,
+                      f'INS_HNTCH_FREQ={dom_freq:.0f} 노치필터 설정 권장, 프롭 밸런싱')
+        else:
+            self._add('OK', f'FFT 피크 {dom_freq:.0f}Hz ({dominant[0]}축)', detail)
 
     # ══════════════════════════════════════════════
     # 종합 분석 엔진 — 이벤트 타임라인 + 근본 원인 + 비행 복기
