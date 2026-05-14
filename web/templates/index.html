@@ -212,14 +212,32 @@ border:1px solid transparent;transition:all .2s;white-space:nowrap;}
 
     <!-- Tabs -->
     <div class="tabs">
-      <div class="tab active" data-tab="charts">Charts</div>
+      <div class="tab active" data-tab="story">비행 복기</div>
+      <div class="tab" data-tab="rootcause">원인 분석</div>
+      <div class="tab" data-tab="timeline">타임라인</div>
+      <div class="tab" data-tab="charts">Charts</div>
       <div class="tab" data-tab="findings">Findings</div>
-      <div class="tab" data-tab="events">Events</div>
+      <div class="tab" data-tab="params">파라미터</div>
       <div class="tab" data-tab="compare">비행 비교</div>
     </div>
 
+    <!-- 비행 복기 Tab -->
+    <div class="tab-content active" id="tab-story">
+      <div id="storyContent" style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:20px;font-size:13px;line-height:1.8;white-space:pre-wrap;"></div>
+    </div>
+
+    <!-- 원인 분석 Tab -->
+    <div class="tab-content" id="tab-rootcause">
+      <div id="rootCauseContent"></div>
+    </div>
+
+    <!-- 타임라인 Tab -->
+    <div class="tab-content" id="tab-timeline">
+      <div id="timelineContent"></div>
+    </div>
+
     <!-- Charts Tab -->
-    <div class="tab-content active" id="tab-charts">
+    <div class="tab-content" id="tab-charts">
       <div class="chart-section"><div class="chart-title">고도 (Altitude)</div>
         <div class="chart-box" id="chartAlt"></div></div>
       <div class="chart-section"><div class="chart-title">진동 (Vibration)</div>
@@ -246,6 +264,14 @@ border:1px solid transparent;transition:all .2s;white-space:nowrap;}
         <div class="chart-box" id="chartPidRoll"></div></div>
       <div class="chart-section"><div class="chart-title">PID 추적 (Pitch)</div>
         <div class="chart-box" id="chartPidPitch"></div></div>
+      <div class="chart-section" id="secLanding" style="display:none"><div class="chart-title">착륙 분석 (Landing)</div>
+        <div class="chart-box" id="chartLanding"></div></div>
+      <div class="chart-section" id="secEsc" style="display:none"><div class="chart-title">ESC 텔레메트리</div>
+        <div class="chart-box" id="chartEsc"></div></div>
+      <div class="chart-section" id="secHover" style="display:none"><div class="chart-title">호버 위치 안정성</div>
+        <div class="chart-box" id="chartHover"></div></div>
+      <div class="chart-section" id="secPhases" style="display:none"><div class="chart-title">비행 구간 분류</div>
+        <div class="chart-box" id="chartPhases"></div></div>
       <div class="chart-section"><div class="chart-title">GPS 경로</div>
         <div class="chart-box" id="chartGps"></div></div>
     </div>
@@ -255,9 +281,9 @@ border:1px solid transparent;transition:all .2s;white-space:nowrap;}
       <div class="findings" id="findingsList"></div>
     </div>
 
-    <!-- Events Tab -->
-    <div class="tab-content" id="tab-events">
-      <div class="findings" id="eventsList"></div>
+    <!-- 파라미터 Tab -->
+    <div class="tab-content" id="tab-params">
+      <div id="paramsContent"></div>
     </div>
 
     <!-- 비행 비교 Tab -->
@@ -382,9 +408,20 @@ function render(d){
   if(d.timeseries.pid_pitch) plotPid(d, 'pid_pitch', 'chartPidPitch', 'Pitch');
   if(d.timeseries.gps) plotGps(d);
 
+  // New charts
+  if(d.timeseries.esc_0||d.timeseries.esc_1){document.getElementById('secEsc').style.display='';plotEscChart(d);}
+  if(d.hover){document.getElementById('secHover').style.display='';plotHoverChart(d);}
+  if(d.flight_phases&&d.flight_phases.length){document.getElementById('secPhases').style.display='';plotPhasesChart(d);}
+  if(d.landing){document.getElementById('secLanding').style.display='';plotLandingChart(d);}
+
   // Findings
   renderFindings(d.findings);
-  renderEvents(d.events);
+
+  // New sections
+  if(d.flight_story) renderStory(d.flight_story);
+  if(d.root_cause) renderRootCause(d.root_cause);
+  if(d.timeline) renderTimeline(d.timeline);
+  if(d.param_check) renderParams(d.param_check);
 }
 
 function modeShapes(modes,maxT){
@@ -509,12 +546,207 @@ function renderFindings(findings){
     </div>`).join('');
 }
 
-function renderEvents(events){
-  document.getElementById('eventsList').innerHTML=events.map(e=>`
-    <div class="finding">
-      <div class="sev OK" style="background:var(--accent);font-size:10px;">${Math.round(e.t)}s</div>
-      <div class="body"><h4>${e.desc}</h4></div>
-    </div>`).join('');
+// ── 비행 복기 ──
+function renderStory(story){
+  const el=document.getElementById('storyContent');
+  // 제목은 볼드+컬러, 나머지는 일반
+  el.innerHTML=story.replace(/■ (.+)/g,'<span style="color:var(--blue);font-weight:700;font-size:15px;">■ $1</span>')
+    .replace(/⛔/g,'<span style="color:var(--red);">⛔</span>')
+    .replace(/⚠️/g,'<span style="color:var(--orange);">⚠️</span>')
+    .replace(/✅/g,'<span style="color:var(--green);">✅</span>')
+    .replace(/🔴/g,'<span style="color:var(--red);">●</span>')
+    .replace(/🟡/g,'<span style="color:var(--yellow);">●</span>')
+    .replace(/🔵/g,'<span style="color:var(--blue);">●</span>')
+    .replace(/📳/g,'<span style="color:var(--orange);">⚡</span>')
+    .replace(/📡/g,'<span style="color:var(--cyan);">📡</span>')
+    .replace(/🔋/g,'<span style="color:var(--green);">🔋</span>');
+}
+
+// ── 근본 원인 분석 ──
+function renderRootCause(rc){
+  const el=document.getElementById('rootCauseContent');
+  let html='';
+
+  // 원인 카드
+  if(rc.causes&&rc.causes.length){
+    rc.causes.forEach((c,i)=>{
+      const confColor=c.confidence==='HIGH'?'var(--red)':c.confidence==='MEDIUM'?'var(--orange)':'var(--green)';
+      const confKr={HIGH:'높음',MEDIUM:'보통',LOW:'낮음'}[c.confidence]||'?';
+      html+=`<div style="background:var(--card);border:1px solid var(--border);border-left:4px solid ${confColor};border-radius:8px;padding:16px;margin-bottom:12px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+          <span style="font-size:11px;color:${confColor};font-weight:700;background:rgba(255,255,255,0.05);padding:2px 8px;border-radius:4px;">${c.category}</span>
+          <span style="font-size:11px;color:var(--dim);">확신도: <b style="color:${confColor}">${confKr}</b></span>
+        </div>
+        <h3 style="font-size:15px;margin-bottom:6px;">${c.title}</h3>
+        <p style="font-size:12px;color:var(--dim);line-height:1.6;margin-bottom:10px;">${c.detail}</p>`;
+      if(c.action&&c.action.length){
+        html+=`<div style="font-size:12px;color:var(--cyan);">`;
+        c.action.forEach((a,j)=>{html+=`<div style="padding:2px 0;">${j+1}. ${a}</div>`;});
+        html+=`</div>`;
+      }
+      html+=`</div>`;
+    });
+  }
+
+  // 교차 분석 근거
+  if(rc.correlations&&rc.correlations.length){
+    html+=`<div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:16px;margin-top:12px;">
+      <h3 style="font-size:14px;color:var(--blue);margin-bottom:12px;">교차 분석 근거</h3>`;
+    const seen=new Set();
+    rc.correlations.forEach(c=>{
+      const key=c.finding.substring(0,60);
+      if(seen.has(key))return;seen.add(key);
+      const m=Math.floor(c.ts/60);const s=Math.floor(c.ts%60);
+      html+=`<div style="font-size:12px;padding:4px 0;border-bottom:1px solid var(--border);">
+        <span style="color:var(--dim);font-family:monospace;">[${m}:${String(s).padStart(2,'0')}]</span>
+        ${c.finding}</div>`;
+    });
+    html+=`</div>`;
+  }
+
+  el.innerHTML=html||'<div style="color:var(--dim);padding:20px;">교차 분석할 에러가 없습니다.</div>';
+}
+
+// ── 이벤트 타임라인 ──
+function renderTimeline(timeline){
+  const el=document.getElementById('timelineContent');
+  if(!timeline||!timeline.length){el.innerHTML='<div style="color:var(--dim);padding:20px;">이벤트 없음</div>';return;}
+
+  const sevColors={FAIL:'var(--red)',WARN:'var(--orange)',INFO:'var(--blue)'};
+  const sevBg={FAIL:'rgba(239,83,80,0.08)',WARN:'rgba(255,152,0,0.08)',INFO:'transparent'};
+
+  let html=`<div style="position:relative;padding-left:24px;">`;
+  // 타임라인 세로선
+  html+=`<div style="position:absolute;left:10px;top:0;bottom:0;width:2px;background:var(--border);"></div>`;
+
+  timeline.forEach(ev=>{
+    const m=Math.floor(ev.ts/60);const s=Math.floor(ev.ts%60);
+    const c=sevColors[ev.sev]||'var(--dim)';
+    const bg=sevBg[ev.sev]||'transparent';
+    html+=`<div style="position:relative;padding:8px 12px;margin-bottom:4px;border-radius:6px;background:${bg};border:1px solid var(--border);">
+      <div style="position:absolute;left:-20px;top:12px;width:12px;height:12px;border-radius:50%;background:${c};border:2px solid var(--bg);"></div>
+      <div style="display:flex;gap:10px;align-items:baseline;">
+        <span style="font-family:monospace;font-size:12px;color:var(--dim);min-width:44px;">${m}:${String(s).padStart(2,'0')}</span>
+        <span style="font-size:10px;color:${c};font-weight:600;min-width:52px;">${ev.type}</span>
+        <span style="font-size:12px;flex:1;">${ev.title}</span>
+      </div>`;
+    if(ev.detail){
+      html+=`<div style="margin-left:106px;font-size:11px;color:var(--dim);margin-top:2px;">${ev.detail}</div>`;
+    }
+    if(ev.fix){
+      html+=`<div style="margin-left:106px;font-size:11px;color:var(--cyan);margin-top:2px;">조치: ${ev.fix}</div>`;
+    }
+    html+=`</div>`;
+  });
+  html+=`</div>`;
+  el.innerHTML=html;
+}
+
+// ── 파라미터 체크리스트 ──
+function renderParams(pc){
+  const el=document.getElementById('paramsContent');
+  if(!pc){el.innerHTML='<div style="color:var(--dim);padding:20px;">파라미터 데이터 없음</div>';return;}
+  let html=`<div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:16px;margin-bottom:12px;">
+    <div style="font-size:13px;color:var(--dim);margin-bottom:12px;">총 ${pc.total}개 파라미터 중 주요 항목 점검 결과</div>`;
+
+  if(pc.issues&&pc.issues.length){
+    html+=`<h3 style="color:var(--red);font-size:14px;margin-bottom:8px;">⚠ 점검 필요 (${pc.issues.length}건)</h3>`;
+    pc.issues.forEach(([param,val,desc,fix])=>{
+      html+=`<div style="padding:8px;border-bottom:1px solid var(--border);">
+        <div style="display:flex;justify-content:space-between;">
+          <span style="font-weight:700;font-size:12px;color:var(--orange);">${param}</span>
+          <span style="font-size:12px;">현재: <b>${val}</b></span>
+        </div>
+        <div style="font-size:11px;color:var(--dim);margin-top:2px;">${desc}</div>
+        <div style="font-size:11px;color:var(--cyan);margin-top:2px;">${fix}</div>
+      </div>`;
+    });
+  }
+
+  if(pc.not_set&&pc.not_set.length){
+    html+=`<h3 style="color:var(--orange);font-size:14px;margin:12px 0 8px;">확인 필요</h3>
+      <div style="font-size:12px;color:var(--dim);">${pc.not_set.join(', ')} — 로그에 기록 안 됨 (기본값 사용 중 가능성)</div>`;
+  }
+
+  if(pc.good&&pc.good.length){
+    html+=`<h3 style="color:var(--green);font-size:14px;margin:12px 0 8px;">✓ 양호 (${pc.good.length}건)</h3>
+      <div style="font-size:11px;color:var(--dim);line-height:1.8;">${pc.good.join(', ')}</div>`;
+  }
+
+  html+=`</div>`;
+  el.innerHTML=html;
+}
+
+// ── ESC 차트 ──
+function plotEscChart(d){
+  const traces=[];const colors=['#ef5350','#66bb6a','#4fc3f7','#ab47bc','#ff9800','#26c6da','#fdd835','#ff69b4'];
+  let maxT=0;
+  for(let i=0;i<8;i++){
+    const key=`esc_${i}`;
+    if(!d.timeseries[key])continue;
+    const ts=d.timeseries[key];
+    maxT=Math.max(maxT,ts.t.slice(-1)[0]||0);
+    if(ts.rpm.some(v=>v>0))
+      traces.push({x:ts.t,y:ts.rpm,type:'scatter',mode:'lines',name:`M${i+1} RPM`,line:{color:colors[i],width:0.8}});
+  }
+  if(!traces.length)return;
+  Plotly.newPlot('chartEsc',traces,{...PLOT_LAYOUT,yaxis:{...PLOT_LAYOUT.yaxis,title:'RPM'},
+    shapes:[...modeShapes(d.modes,maxT),...errLines(d.err_times)]},{responsive:true,scrollZoom:false,displayModeBar:!isMobile});
+}
+
+// ── 호버 안정성 차트 ──
+function plotHoverChart(d){
+  if(!d.hover||!d.hover.length)return;
+  // 실제 GPS 데이터에서 호버 구간의 위치 분산을 산점도로 표시하려면 raw GPS가 필요
+  // hover_data는 통계만 있으므로 바 차트로 CEP 표시
+  const labels=d.hover.map((h,i)=>`${h.mode} #${i+1} (${h.duration}s)`);
+  Plotly.newPlot('chartHover',[
+    {x:labels,y:d.hover.map(h=>h.cep50_m),type:'bar',name:'CEP50',marker:{color:'#4fc3f7'}},
+    {x:labels,y:d.hover.map(h=>h.cep95_m),type:'bar',name:'CEP95',marker:{color:'#ff9800'}},
+    {x:labels,y:d.hover.map(h=>h.max_m),type:'bar',name:'최대',marker:{color:'#ef5350'}},
+  ],{...PLOT_LAYOUT,barmode:'group',yaxis:{...PLOT_LAYOUT.yaxis,title:'편차 (m)'},
+    shapes:[{type:'line',yref:'y',xref:'paper',x0:0,x1:1,y0:2,y1:2,line:{color:'#fdd835',width:1,dash:'dash'}},
+            {type:'line',yref:'y',xref:'paper',x0:0,x1:1,y0:5,y1:5,line:{color:'#ef5350',width:1,dash:'dash'}}],
+  },{responsive:true,scrollZoom:false,displayModeBar:!isMobile});
+}
+
+// ── 비행 구간 분류 차트 ──
+function plotPhasesChart(d){
+  const phases=d.flight_phases;if(!phases||!phases.length)return;
+  const phaseColors={GROUND:'#616161',TAKEOFF:'#66bb6a',CLIMB:'#29b6f6',HOVER:'#26c6da',
+    CRUISE:'#ab47bc',DESCENT:'#ffa726',LANDING:'#ff7043'};
+  const phaseKr={GROUND:'지상',TAKEOFF:'이륙',CLIMB:'상승',HOVER:'호버',CRUISE:'이동',DESCENT:'하강',LANDING:'착륙'};
+  const traces=phases.map(p=>({
+    x:[p.t_end-p.t_start],y:[''],type:'bar',orientation:'h',
+    base:p.t_start,name:phaseKr[p.phase]||p.phase,
+    marker:{color:phaseColors[p.phase]||'#37474f'},
+    hovertext:`${phaseKr[p.phase]||p.phase}: ${p.duration}초`,hoverinfo:'text',
+    showlegend:false,
+  }));
+  // 범례용 (중복 제거)
+  const seenPhases=new Set();
+  phases.forEach(p=>{if(!seenPhases.has(p.phase)){seenPhases.add(p.phase);
+    traces.push({x:[0],y:[''],type:'bar',orientation:'h',name:phaseKr[p.phase]||p.phase,
+      marker:{color:phaseColors[p.phase]||'#37474f'},showlegend:true,visible:'legendonly'});}});
+  Plotly.newPlot('chartPhases',traces,{...PLOT_LAYOUT,height:isMobile?100:120,barmode:'stack',
+    xaxis:{...PLOT_LAYOUT.xaxis,title:'시간 (초)'},yaxis:{visible:false},
+    margin:isMobile?{l:10,r:10,t:8,b:32}:{l:10,r:20,t:10,b:40},
+    legend:{orientation:'h',y:-0.3,font:{size:10}},
+  },{responsive:true,scrollZoom:false,displayModeBar:false});
+}
+
+// ── 착륙 분석 차트 ──
+function plotLandingChart(d){
+  // 착륙 데이터가 있으면 CTUN 기반 시계열은 없으므로 정보 카드 표시 + 고도 마지막 구간 확대
+  const ld=d.landing;
+  const el=document.getElementById('chartLanding');
+  el.innerHTML=`<div style="padding:16px;display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;">
+    <div class="kpi"><div class="label">최대 하강속도</div><div class="value" style="color:${ld.max_descent>3?'var(--red)':ld.max_descent>1.5?'var(--orange)':'var(--green)'}">${ld.max_descent}m/s</div></div>
+    <div class="kpi"><div class="label">평균 하강속도</div><div class="value">${ld.avg_descent}m/s</div></div>
+    <div class="kpi"><div class="label">착륙 소요시간</div><div class="value">${ld.duration}초</div></div>
+    <div class="kpi"><div class="label">바운스</div><div class="value" style="color:${ld.bounce_count>0?'var(--orange)':'var(--green)'}">${ld.bounce_count}회${ld.bounce_count>0?' ('+ld.bounce_max_m+'m)':''}</div></div>
+    ${ld.accuracy_m!==null?`<div class="kpi"><div class="label">이륙↔착륙 거리</div><div class="value">${ld.accuracy_m}m</div></div>`:''}
+  </div>`;
 }
 
 function plotRadar(scores){
