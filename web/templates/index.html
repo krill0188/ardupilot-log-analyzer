@@ -212,7 +212,8 @@ border:1px solid transparent;transition:all .2s;white-space:nowrap;}
 
     <!-- Tabs -->
     <div class="tabs">
-      <div class="tab active" data-tab="story">비행 복기</div>
+      <div class="tab active" data-tab="inventory">로그 구성</div>
+      <div class="tab" data-tab="story">비행 복기</div>
       <div class="tab" data-tab="rootcause">원인 분석</div>
       <div class="tab" data-tab="timeline">타임라인</div>
       <div class="tab" data-tab="charts">Charts</div>
@@ -221,8 +222,13 @@ border:1px solid transparent;transition:all .2s;white-space:nowrap;}
       <div class="tab" data-tab="compare">비행 비교</div>
     </div>
 
+    <!-- 로그 구성 Tab (1차: 어떤 데이터가 있는가) -->
+    <div class="tab-content active" id="tab-inventory">
+      <div id="inventoryContent"></div>
+    </div>
+
     <!-- 비행 복기 Tab -->
-    <div class="tab-content active" id="tab-story">
+    <div class="tab-content" id="tab-story">
       <div id="storyContent" style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:20px;font-size:13px;line-height:1.8;white-space:pre-wrap;"></div>
     </div>
 
@@ -382,6 +388,9 @@ function render(d){
   ];
   document.getElementById('kpiGrid').innerHTML=kpis.map(([l,v])=>
     `<div class="kpi"><div class="label">${l}</div><div class="value">${v}</div></div>`).join('');
+
+  // 1차: 로그 구성 (인벤토리)
+  if(d.log_inventory) renderInventory(d.log_inventory);
 
   // Mode Timeline
   renderModeBar(d);
@@ -544,6 +553,68 @@ function renderFindings(findings){
         ${f.fix?`<p class="fix">${f.fix.replace(/\n/g,'<br>')}</p>`:''}
       </div>
     </div>`).join('');
+}
+
+// ── 로그 구성 (1차: 이 로그에 뭐가 들어있는가) ──
+function renderInventory(inv){
+  const el=document.getElementById('inventoryContent');
+  let html='';
+
+  // 요약 배지
+  html+=`<div style="display:flex;gap:12px;margin-bottom:16px;flex-wrap:wrap;">
+    <div class="kpi"><div class="label">메시지 타입</div><div class="value">${inv.total_types}종</div></div>
+    <div class="kpi"><div class="label">총 메시지 수</div><div class="value">${(inv.total_messages/1000).toFixed(0)}K</div></div>
+    <div class="kpi"><div class="label">분석 가능</div><div class="value" style="color:var(--green)">${inv.can_analyze.length}항목</div></div>
+    <div class="kpi"><div class="label">분석 불가</div><div class="value" style="color:var(--dim)">${inv.cant_analyze.length}항목</div></div>
+  </div>`;
+
+  // 분석 가능 항목
+  html+=`<div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:16px;margin-bottom:12px;">
+    <h3 style="font-size:14px;color:var(--green);margin-bottom:12px;">✅ 분석 가능 항목 (${inv.can_analyze.length}개)</h3>
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:6px;">`;
+  inv.can_analyze.forEach(item=>{
+    const color=item.status==='full'?'var(--green)':'var(--orange)';
+    const icon=item.status==='full'?'✅':'⚠️';
+    let detail=item.status==='full'?'':'일부: '+item.found.join(',')+' / 없음: '+item.missing.join(',');
+    html+=`<div style="padding:6px 10px;border-radius:4px;border:1px solid var(--border);font-size:12px;">
+      <span style="color:${color}">${icon}</span> ${item.name}
+      ${detail?'<div style="font-size:10px;color:var(--dim);">'+detail+'</div>':''}
+    </div>`;
+  });
+  html+=`</div></div>`;
+
+  // 분석 불가 항목
+  if(inv.cant_analyze.length){
+    html+=`<div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:16px;margin-bottom:12px;">
+      <h3 style="font-size:14px;color:var(--dim);margin-bottom:12px;">❌ 분석 불가 (데이터 없음)</h3>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;">`;
+    inv.cant_analyze.forEach(item=>{
+      html+=`<span style="padding:4px 10px;border-radius:4px;border:1px solid var(--border);font-size:11px;color:var(--dim);">
+        ${item.name} <span style="font-size:9px;">(${item.required.join(',')})</span></span>`;
+    });
+    html+=`</div></div>`;
+  }
+
+  // 카테고리별 상세
+  html+=`<div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:16px;">
+    <h3 style="font-size:14px;color:var(--blue);margin-bottom:12px;">로그 메시지 상세 (${inv.total_types}종)</h3>`;
+  for(const[cat, items]of Object.entries(inv.categories)){
+    html+=`<div style="margin-bottom:10px;">
+      <div style="font-size:12px;color:var(--cyan);font-weight:600;margin-bottom:4px;">${cat}</div>
+      <div style="display:flex;gap:4px;flex-wrap:wrap;">`;
+    items.forEach(item=>{
+      html+=`<span style="padding:3px 8px;border-radius:4px;background:rgba(79,195,247,0.08);border:1px solid var(--border);font-size:11px;cursor:default;"
+        title="${item.fields.join(', ')}">${item.type} <span style="color:var(--dim);font-size:9px;">(${item.count})</span></span>`;
+    });
+    html+=`</div></div>`;
+  }
+
+  // 전체 타입 리스트
+  html+=`<div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border);">
+    <div style="font-size:10px;color:var(--dim);">전체: ${inv.all_types.join(' · ')}</div>
+  </div></div>`;
+
+  el.innerHTML=html;
 }
 
 // ── 비행 복기 ──

@@ -72,6 +72,9 @@ async def analyze_log(file: UploadFile = File(...)):
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
 
+    # 1차: 로그 인벤토리 (어떤 데이터가 있는지)
+    log_inventory = parser.get_log_summary()
+
     # 차트 경로를 웹 URL로 변환
     chart_urls = {}
     for key, path in charts.items():
@@ -398,6 +401,7 @@ async def analyze_log(file: UploadFile = File(...)):
             "ok": sum(1 for f in findings if f['sev'] == 'OK'),
         },
         "scores": scores,
+        "log_inventory": log_inventory,
         "motor_health": motor_health,
         "batt_ir": batt_ir,
         "landing": landing_data,

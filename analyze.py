@@ -103,10 +103,13 @@ class LogParser:
         self.filepath = filepath
         self.mlog = mavutil.mavlink_connection(filepath)
         self.data: dict = {}
+        self.inventory: dict = {}   # 1차: 전체 메시지 인벤토리
         self._parse()
 
     def _parse(self):
-        types = {
+        """2-pass 파싱: 모든 메시지를 스캔하되, 분석용은 상세 저장"""
+        # 분석에 사용하는 메시지 (상세 저장)
+        analysis_types = {
             'GPS','ATT','VIBE','BAT','BATT','CURR',
             'EKF4','CTUN','RCIN','RCOU','MODE','MSG',
             'ERR','EV','PM','IMU','NKF4','XKF4',
@@ -115,17 +118,125 @@ class LogParser:
             'NKF2','XKF2','PIDR','PIDP','PIDY',
             'BARO','RSSI',
         }
-        for t in types:
+        for t in analysis_types:
             self.data[t] = []
+
+        # 전체 스캔 — 모든 메시지 타입 인벤토리 수집
         while True:
             msg = self.mlog.recv_match(blocking=False)
             if msg is None:
                 break
             mt = msg.get_type()
-            if mt in types:
-                d = msg.to_dict()
-                d['_ts'] = getattr(msg, '_timestamp', 0)
+            d = msg.to_dict()
+            d['_ts'] = getattr(msg, '_timestamp', 0)
+
+            # 인벤토리: 타입별 카운트 + 필드 목록 (첫 메시지에서)
+            if mt not in self.inventory:
+                fields = [k for k in d.keys() if k not in ('mavpackettype', '_ts')]
+                self.inventory[mt] = {
+                    'count': 0,
+                    'fields': fields,
+                    'sample': {k: d[k] for k in fields[:10]} if fields else {},
+                }
+            self.inventory[mt]['count'] += 1
+
+            # 분석용 메시지는 상세 저장
+            if mt in analysis_types:
                 self.data[mt].append(d)
+
+    def get_inventory(self) -> dict:
+        """1차: 로그에 포함된 전체 메시지 타입 인벤토리"""
+        return self.inventory
+
+    def get_log_summary(self) -> dict:
+        """로그 구성 요약 — 어떤 데이터가 있고 없는지"""
+        inv = self.inventory
+        total_msgs = sum(v['count'] for v in inv.values())
+
+        # 카테고리별 분류
+        categories = {
+            '센서': ['IMU','IMU2','IMU3','VIBE','BARO','BARO2','MAG','MAG2','MAG3'],
+            'GPS': ['GPS','GPS2','GPA','GPA2'],
+            '네비게이션': ['NKF1','NKF2','NKF3','NKF4','NKF5','XKF1','XKF2','XKF3','XKF4','XKF5','EKF4','POS','ORGN'],
+            '자세/제어': ['ATT','RATE','PIDR','PIDP','PIDY','CTUN','MOTB','PSC'],
+            '모터/ESC': ['RCOU','ESC','RCIN'],
+            '전원': ['BAT','BAT2','BATT','CURR','POWR'],
+            '미션/모드': ['CMD','MODE','MSG','PARM'],
+            '에러/이벤트': ['ERR','EV'],
+            '시스템': ['PM','FMT','UNIT','MULT','FMTU','PARM'],
+            'FFT/필터': ['FTN','FTNS','FFT','FFTD'],
+            '텔레메트리': ['RSSI','RAD','WENC'],
+            '카메라/기타': ['CAM','TRIG','TERRAIN','FLOW','OF','RALLY','FENCE'],
+        }
+
+        available = {}
+        for cat, msg_types in categories.items():
+            cat_data = []
+            for mt in msg_types:
+                if mt in inv:
+                    cat_data.append({'type': mt, 'count': inv[mt]['count'],
+                                     'fields': inv[mt]['fields']})
+            if cat_data:
+                available[cat] = cat_data
+
+        # 분석 가능 항목 자동 판정
+        can_analyze = []
+        cant_analyze = []
+
+        checks = [
+            ('에러/이벤트 분석', ['ERR', 'EV']),
+            ('진동 분석', ['VIBE']),
+            ('배터리 분석', ['BAT', 'BATT', 'CURR']),
+            ('EKF 건강도', ['NKF4', 'XKF4', 'EKF4']),
+            ('GPS 품질', ['GPS']),
+            ('컴퍼스 분석', ['MAG']),
+            ('모터 균형', ['RCOU']),
+            ('보드 전원', ['POWR']),
+            ('RC 입력', ['RCIN']),
+            ('바람 추정', ['NKF2', 'XKF2']),
+            ('PID 튜닝', ['PIDR', 'PIDP']),
+            ('착륙 분석', ['CTUN', 'GPS']),
+            ('크래시 감지', ['ATT', 'GPS']),
+            ('파라미터 체크', ['PARM']),
+            ('호버 안정성', ['GPS', 'MODE']),
+            ('ESC 텔레메트리', ['ESC']),
+            ('비행 구간 분류', ['GPS', 'RCOU']),
+            ('컴퍼스-모터 간섭', ['MAG', 'RCOU']),
+            ('전류 스파이크', ['BAT', 'BATT', 'CURR']),
+            ('모터 포화', ['RCOU']),
+            ('전력 효율', ['BAT', 'BATT', 'CURR']),
+            ('RC 신호(RSSI)', ['RSSI', 'RCIN']),
+            ('기압계 드리프트', ['BARO', 'GPS']),
+            ('듀얼 컴퍼스', ['MAG', 'MAG2']),
+            ('고도 추적(Des/Act)', ['CTUN']),
+            ('페일세이프 재구성', ['ERR', 'MSG']),
+            ('FFT 진동 주파수', ['IMU']),
+            ('이벤트 타임라인', ['ERR', 'EV', 'MODE', 'MSG']),
+            ('근본 원인 분석', ['ERR']),
+            ('비행 복기', ['GPS', 'MODE']),
+        ]
+
+        for name, required in checks:
+            has_any = any(mt in inv for mt in required)
+            has_all = all(mt in inv for mt in required)
+            if has_all:
+                can_analyze.append({'name': name, 'status': 'full', 'required': required})
+            elif has_any:
+                found = [mt for mt in required if mt in inv]
+                missing = [mt for mt in required if mt not in inv]
+                can_analyze.append({'name': name, 'status': 'partial',
+                                    'found': found, 'missing': missing})
+            else:
+                cant_analyze.append({'name': name, 'required': required})
+
+        return {
+            'total_types': len(inv),
+            'total_messages': total_msgs,
+            'categories': available,
+            'can_analyze': can_analyze,
+            'cant_analyze': cant_analyze,
+            'all_types': sorted(inv.keys()),
+        }
 
     def get(self, t: str) -> list:
         return self.data.get(t, [])
