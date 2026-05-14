@@ -16,6 +16,11 @@ input/*.log
 output/
 web/uploads/
 
+# Database
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+
 # Environment
 .env
 .venv/
