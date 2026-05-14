@@ -173,6 +173,21 @@ border:1px solid transparent;transition:all .2s;white-space:nowrap;}
 </div>
 
 <div class="container">
+  <!-- ID 입력 + 내 로그 -->
+  <div id="userBar" style="display:flex;gap:10px;align-items:center;margin-bottom:16px;flex-wrap:wrap;">
+    <div style="display:flex;align-items:center;gap:6px;flex:1;min-width:200px;">
+      <span style="font-size:12px;color:var(--dim);white-space:nowrap;">사용자 ID:</span>
+      <input type="text" id="userId" placeholder="이름 또는 ID 입력" value=""
+        style="flex:1;padding:8px 12px;border-radius:6px;border:1px solid var(--border);
+        background:var(--card);color:var(--text);font-size:13px;outline:none;min-width:120px;"
+        autocomplete="off" spellcheck="false">
+    </div>
+    <button class="btn btn-outline" onclick="loadMyLogs()" style="padding:8px 16px;font-size:12px;">내 로그 이력</button>
+  </div>
+
+  <!-- 내 로그 목록 -->
+  <div id="myLogs" style="display:none;margin-bottom:20px;"></div>
+
   <!-- Drop Zone -->
   <div class="dropzone" id="dropzone" onclick="document.getElementById('fileInput').click()">
     <h2>.bin 파일을 여기에 드래그하세요</h2>
@@ -194,6 +209,7 @@ border:1px solid transparent;transition:all .2s;white-space:nowrap;}
     <!-- Actions -->
     <div class="actions">
       <button class="btn btn-primary" onclick="downloadPdf()">PDF 다운로드</button>
+      <button class="btn btn-outline" onclick="downloadJson()">JSON 내보내기</button>
       <button class="btn btn-outline" onclick="reset()">새 파일 분석</button>
     </div>
 
@@ -352,11 +368,71 @@ document.querySelectorAll('.tab').forEach(tab=>{
   });
 });
 
+// 내 로그 이력 로드
+async function loadMyLogs(){
+  const uid=document.getElementById('userId').value.trim();
+  if(!uid){alert('사용자 ID를 입력하세요');return;}
+  const el=document.getElementById('myLogs');
+  el.style.display='block';
+  el.innerHTML='<div style="color:var(--dim);padding:12px;">로딩 중...</div>';
+  try{
+    const res=await fetch(`/api/logs/${encodeURIComponent(uid)}`);
+    const data=await res.json();
+    if(!data.logs.length){
+      el.innerHTML=`<div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:16px;color:var(--dim);font-size:13px;">
+        "${uid}" 로그 이력이 없습니다. 파일을 업로드하면 자동 저장됩니다.</div>`;
+      return;
+    }
+    let html=`<div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:16px;">
+      <h3 style="font-size:14px;color:var(--blue);margin-bottom:12px;">${uid}님의 로그 이력 (${data.logs.length}건)</h3>
+      <div style="overflow-x:auto;"><table style="width:100%;font-size:12px;border-collapse:collapse;">
+      <tr style="color:var(--dim);border-bottom:1px solid var(--border);">
+        <th style="padding:6px;text-align:left;">날짜</th>
+        <th style="padding:6px;text-align:left;">파일</th>
+        <th style="padding:6px;">판정</th>
+        <th style="padding:6px;">점수</th>
+        <th style="padding:6px;">비행시간</th>
+        <th style="padding:6px;">최대고도</th>
+        <th style="padding:6px;">FAIL</th>
+        <th style="padding:6px;">WARN</th>
+        <th style="padding:6px;text-align:left;">원인</th>
+        <th style="padding:6px;"></th>
+      </tr>`;
+    data.logs.forEach(l=>{
+      const oc={FAIL:'var(--red)',WARN:'var(--orange)',OK:'var(--green)'}[l.overall]||'var(--dim)';
+      html+=`<tr style="border-bottom:1px solid var(--border);">
+        <td style="padding:6px;white-space:nowrap;">${l.uploaded_at}</td>
+        <td style="padding:6px;max-width:120px;overflow:hidden;text-overflow:ellipsis;" title="${l.filename}">${l.filename}</td>
+        <td style="padding:6px;text-align:center;color:${oc};font-weight:700;">${l.overall}</td>
+        <td style="padding:6px;text-align:center;">${l.score||'-'}</td>
+        <td style="padding:6px;text-align:center;">${l.duration||'-'}</td>
+        <td style="padding:6px;text-align:center;">${l.max_alt||0}m</td>
+        <td style="padding:6px;text-align:center;color:var(--red);">${l.fail_count}</td>
+        <td style="padding:6px;text-align:center;color:var(--orange);">${l.warn_count}</td>
+        <td style="padding:6px;font-size:11px;color:var(--dim);max-width:200px;overflow:hidden;text-overflow:ellipsis;">${l.root_cause||'-'}</td>
+        <td style="padding:6px;"><a href="/api/pdf/${l.job_id}" target="_blank" style="color:var(--cyan);font-size:11px;">PDF</a></td>
+      </tr>`;
+    });
+    html+=`</table></div></div>`;
+    el.innerHTML=html;
+  }catch(e){
+    el.innerHTML=`<div style="color:var(--red);padding:12px;">조회 실패: ${e.message}</div>`;
+  }
+}
+
+// localStorage에서 마지막 사용 ID 복원
+const savedUid=localStorage.getItem('log_user_id');
+if(savedUid)document.getElementById('userId').value=savedUid;
+
 async function upload(file){
+  const uid=document.getElementById('userId').value.trim()||'anonymous';
+  localStorage.setItem('log_user_id',uid);
   dz.style.display='none';
+  document.getElementById('myLogs').style.display='none';
   document.getElementById('loading').classList.add('active');
   const fd=new FormData();
   fd.append('file',file);
+  fd.append('user_id',uid);
   try{
     const res=await fetch('/api/analyze',{method:'POST',body:fd});
     if(!res.ok)throw new Error(await res.text());
@@ -1019,6 +1095,11 @@ function renderCompare(logs){
 function downloadPdf(){
   if(!DATA)return;
   window.open(`/api/pdf/${DATA.job_id}`,'_blank');
+}
+
+function downloadJson(){
+  if(!DATA)return;
+  window.open(`/api/json/${DATA.job_id}`,'_blank');
 }
 
 function reset(){

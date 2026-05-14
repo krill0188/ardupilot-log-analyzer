@@ -6,7 +6,7 @@ Port: 8040
 import os, sys, json, uuid, shutil, asyncio
 from pathlib import Path
 
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI, UploadFile, File, Form, Query
 from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -14,6 +14,7 @@ from fastapi.staticfiles import StaticFiles
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from analyze import LogParser, Analyzer, ChartGen
 from ardupilot_error_codes import lookup_event
+from db import save_log, get_user_logs, get_log_by_job, get_all_users
 
 app = FastAPI(title="ArduCopter Log Analyzer")
 
@@ -49,7 +50,7 @@ async def index():
 
 
 @app.post("/api/analyze")
-async def analyze_log(file: UploadFile = File(...)):
+async def analyze_log(file: UploadFile = File(...), user_id: str = Form("anonymous")):
     """파일 업로드 → 분석 → JSON 결과 반환"""
     job_id = uuid.uuid4().hex[:10]
     job_dir = UPLOAD_DIR / job_id
@@ -420,7 +421,38 @@ async def analyze_log(file: UploadFile = File(...)):
         "alt_tracking": getattr(analyzer, 'alt_tracking', None),
         "failsafe_events": getattr(analyzer, 'failsafe_events', None),
         "fft_peaks": getattr(analyzer, 'fft_peaks', None),
+        "user_id": user_id,
     })
+
+    # DB 저장
+    try:
+        counts_dict = {
+            "fail": sum(1 for f in findings if f['sev'] == 'FAIL'),
+            "warn": sum(1 for f in findings if f['sev'] == 'WARN'),
+            "ok": sum(1 for f in findings if f['sev'] == 'OK'),
+        }
+        rc_text = ''
+        if analyzer.root_cause and analyzer.root_cause.get('causes'):
+            rc_text = ' | '.join(c['title'] for c in analyzer.root_cause['causes'][:3])
+        save_log(
+            job_id=job_id, user_id=user_id,
+            filename=s['filename'], filesize_mb=s['filesize_mb'],
+            summary={"duration": s['dur_str'], "max_alt": round(s['max_alt'],1),
+                     "max_spd": round(s['max_spd'],1), "dist_m": round(s['dist_m'],0),
+                     "v_min": round(s['v_min'],2), "v_max": round(s['v_max'],2)},
+            counts=counts_dict, scores=scores,
+            root_cause_text=rc_text,
+            story_text=analyzer.flight_story[:500] if analyzer.flight_story else '',
+        )
+    except Exception as e:
+        print(f"[DB SAVE WARN] {e}")
+
+
+@app.get("/api/logs/{user_id}")
+async def user_logs(user_id: str):
+    """사용자 로그 이력 조회"""
+    logs = get_user_logs(user_id)
+    return {"user_id": user_id, "count": len(logs), "logs": logs}
 
 
 @app.get("/api/csv/{job_id}")
