@@ -1,0 +1,730 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#0f1923">
+<meta name="format-detection" content="telephone=no">
+<title>ArduCopter Log Analyzer</title>
+<script src="https://cdn.plot.ly/plotly-2.35.0.min.js"></script>
+<style>
+:root{--bg:#0f1923;--card:#1a2332;--border:#2a3a4e;--text:#e0e0e0;--dim:#8899aa;
+--blue:#4fc3f7;--green:#66bb6a;--yellow:#fdd835;--orange:#ff9800;--red:#ef5350;
+--purple:#ab47bc;--cyan:#26c6da;--accent:#0f3460;}
+*{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
+body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+min-height:100vh;min-height:-webkit-fill-available;-webkit-text-size-adjust:100%;
+padding-top:env(safe-area-inset-top);padding-bottom:env(safe-area-inset-bottom);
+padding-left:env(safe-area-inset-left);padding-right:env(safe-area-inset-right);}
+.header{background:linear-gradient(135deg,#0d1b2a,#1b2838);padding:20px 32px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:16px;}
+.header h1{font-size:22px;color:var(--blue);font-weight:700;}
+.header .sub{color:var(--dim);font-size:13px;}
+.container{max-width:1400px;margin:0 auto;padding:24px;}
+
+/* Drop Zone */
+.dropzone{border:2px dashed var(--border);border-radius:12px;padding:60px 40px;text-align:center;
+transition:all .3s;cursor:pointer;background:var(--card);margin-bottom:24px;}
+.dropzone:hover,.dropzone.drag{border-color:var(--blue);background:#1a2838;}
+.dropzone h2{color:var(--blue);font-size:18px;margin-bottom:8px;}
+.dropzone p{color:var(--dim);font-size:14px;}
+.dropzone input{display:none;}
+
+/* Loading */
+.loading{display:none;text-align:center;padding:40px;}
+.loading.active{display:block;}
+.spinner{width:48px;height:48px;border:4px solid var(--border);border-top-color:var(--blue);
+border-radius:50%;animation:spin 1s linear infinite;margin:0 auto 16px;}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* Dashboard */
+.dashboard{display:none;}
+.dashboard.active{display:block;}
+
+/* Badge */
+.badge{padding:12px 24px;border-radius:8px;text-align:center;font-size:18px;font-weight:700;
+color:white;margin-bottom:20px;}
+.badge.fail{background:var(--red);}
+.badge.warn{background:var(--orange);}
+.badge.ok{background:var(--green);}
+
+/* KPI Grid */
+.kpi-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:24px;}
+.kpi{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:14px 16px;}
+.kpi .label{color:var(--dim);font-size:11px;text-transform:uppercase;margin-bottom:4px;}
+.kpi .value{color:var(--text);font-size:20px;font-weight:700;}
+
+/* Mode Timeline */
+.mode-bar{display:flex;height:36px;border-radius:6px;overflow:hidden;margin-bottom:24px;background:var(--card);}
+.mode-seg{display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:600;
+color:white;min-width:2px;cursor:default;position:relative;}
+.mode-seg:hover::after{content:attr(data-tip);position:absolute;top:-28px;background:#000;
+padding:3px 8px;border-radius:4px;font-size:11px;white-space:nowrap;z-index:10;}
+
+/* Charts */
+.chart-section{margin-bottom:20px;}
+.chart-title{font-size:14px;font-weight:600;color:var(--blue);margin-bottom:8px;padding-left:4px;}
+.chart-box{background:var(--card);border:1px solid var(--border);border-radius:8px;overflow:hidden;}
+
+/* Findings */
+.findings{margin-top:24px;}
+.finding{display:flex;gap:10px;margin-bottom:10px;background:var(--card);border-radius:8px;
+border:1px solid var(--border);overflow:hidden;}
+.finding .sev{width:48px;min-height:100%;display:flex;align-items:center;justify-content:center;
+font-weight:700;font-size:11px;color:white;flex-shrink:0;}
+.finding .sev.FAIL{background:var(--red);}
+.finding .sev.WARN{background:var(--orange);}
+.finding .sev.OK{background:var(--green);}
+.finding .body{padding:10px 14px;flex:1;}
+.finding .body h4{font-size:13px;margin-bottom:4px;}
+.finding .body p{font-size:11px;color:var(--dim);line-height:1.5;}
+.finding .body .fix{color:var(--cyan);font-size:11px;margin-top:4px;}
+
+/* Actions */
+.actions{display:flex;gap:12px;margin-bottom:24px;}
+.btn{padding:10px 20px;border-radius:6px;border:none;cursor:pointer;font-size:13px;font-weight:600;
+transition:all .2s;}
+.btn-primary{background:var(--blue);color:#000;}
+.btn-primary:hover{background:#29b6f6;}
+.btn-outline{background:transparent;border:1px solid var(--border);color:var(--text);}
+.btn-outline:hover{border-color:var(--blue);color:var(--blue);}
+
+/* Footer */
+.footer{text-align:center;color:var(--dim);font-size:12px;padding:24px;margin-top:40px;
+border-top:1px solid var(--border);}
+
+/* Tabs */
+.tabs{display:flex;gap:4px;margin-bottom:16px;border-bottom:1px solid var(--border);padding-bottom:4px;
+overflow-x:auto;-webkit-overflow-scrolling:touch;}
+.tab{padding:8px 16px;font-size:13px;color:var(--dim);cursor:pointer;border-radius:6px 6px 0 0;
+border:1px solid transparent;transition:all .2s;white-space:nowrap;}
+.tab.active{color:var(--blue);border-color:var(--border);border-bottom-color:var(--bg);background:var(--card);}
+.tab:hover{color:var(--text);}
+.tab-content{display:none;}
+.tab-content.active{display:block;}
+
+/* ─── 모바일 반응형 ─── */
+@media (max-width: 768px) {
+  .header{padding:14px 16px;flex-direction:column;align-items:flex-start;gap:4px;}
+  .header h1{font-size:18px;}
+  .header .sub{font-size:11px;}
+  .container{padding:12px;}
+  .dropzone{padding:40px 16px;}
+  .dropzone h2{font-size:15px;}
+  .dropzone p{font-size:12px;}
+  .kpi-grid{grid-template-columns:repeat(2, 1fr);gap:8px;}
+  .kpi{padding:10px 12px;}
+  .kpi .value{font-size:16px;}
+  .kpi .label{font-size:10px;}
+  .badge{font-size:14px;padding:10px 16px;}
+  .actions{flex-wrap:wrap;}
+  .btn{flex:1;min-width:120px;text-align:center;padding:12px 16px;}
+  .mode-bar{height:28px;}
+  .mode-seg{font-size:8px;}
+  .chart-title{font-size:12px;}
+  .tabs{gap:2px;}
+  .tab{padding:8px 12px;font-size:12px;}
+  .finding{flex-direction:column;}
+  .finding .sev{width:100%;min-height:auto;padding:6px;flex-direction:row;justify-content:flex-start;gap:8px;}
+  .finding .body{padding:8px 12px;}
+  .finding .body h4{font-size:12px;}
+  .finding .body p{font-size:10px;}
+  .footer{font-size:11px;padding:16px;}
+}
+
+@media (max-width: 480px) {
+  .kpi-grid{grid-template-columns:repeat(2, 1fr);gap:6px;}
+  .kpi .value{font-size:14px;}
+  .header h1{font-size:16px;}
+  .dropzone{padding:30px 12px;}
+  .dropzone h2{font-size:14px;}
+}
+
+/* ─── iOS Safari 호환 ─── */
+@supports (-webkit-touch-callout: none) {
+  body{min-height:-webkit-fill-available;}
+  .dropzone{-webkit-user-select:none;user-select:none;}
+  .btn{-webkit-appearance:none;appearance:none;}
+  input[type="file"]{font-size:16px;} /* iOS 줌 방지 */
+  .chart-box{-webkit-overflow-scrolling:touch;overflow-x:auto;}
+}
+
+/* 터치 디바이스 — hover 효과 제거 (ghost click 방지) */
+@media (hover: none) {
+  .dropzone:hover{border-color:var(--border);background:var(--card);}
+  .dropzone.drag{border-color:var(--blue);background:#1a2838;}
+  .btn-primary:hover{background:var(--blue);}
+  .btn-outline:hover{border-color:var(--border);color:var(--text);}
+  .tab:hover{color:var(--dim);}
+  .mode-seg:hover::after{display:none;} /* 모바일에서 툴팁 숨김 */
+}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div style="font-size:28px;">&#9992;</div>
+  <div style="flex:1;">
+    <h1>ArduCopter Log Analyzer</h1>
+    <div class="sub">UAV .bin Flight Log Analysis &mdash; Made by Kim</div>
+  </div>
+  <button onclick="toggleTheme()" class="btn btn-outline" style="padding:6px 12px;font-size:12px;" id="themeBtn">&#9728; Light</button>
+</div>
+
+<div class="container">
+  <!-- Drop Zone -->
+  <div class="dropzone" id="dropzone" onclick="document.getElementById('fileInput').click()">
+    <h2>.bin 파일을 여기에 드래그하세요</h2>
+    <p>또는 클릭하여 파일 선택 (ArduCopter DataFlash .bin)</p>
+    <input type="file" id="fileInput" accept=".bin,.BIN">
+  </div>
+
+  <!-- Loading -->
+  <div class="loading" id="loading">
+    <div class="spinner"></div>
+    <p>로그 분석 중... 파일 크기에 따라 10~30초 소요</p>
+  </div>
+
+  <!-- Dashboard -->
+  <div class="dashboard" id="dashboard">
+    <!-- Badge -->
+    <div class="badge" id="badge"></div>
+
+    <!-- Actions -->
+    <div class="actions">
+      <button class="btn btn-primary" onclick="downloadPdf()">PDF 다운로드</button>
+      <button class="btn btn-outline" onclick="reset()">새 파일 분석</button>
+    </div>
+
+    <!-- KPI -->
+    <div class="kpi-grid" id="kpiGrid"></div>
+
+    <!-- 비행 점수 레이더 + 상세 패널 -->
+    <div style="display:flex;gap:16px;margin-bottom:20px;flex-wrap:wrap;">
+      <div class="chart-box" id="chartRadar" style="flex:1;min-width:280px;min-height:280px;"></div>
+      <div style="flex:1;min-width:260px;display:flex;flex-direction:column;gap:8px;" id="extraInfo"></div>
+    </div>
+
+    <!-- Mode Timeline -->
+    <div class="chart-title">비행 모드 타임라인</div>
+    <div class="mode-bar" id="modeBar"></div>
+
+    <!-- Tabs -->
+    <div class="tabs">
+      <div class="tab active" data-tab="charts">Charts</div>
+      <div class="tab" data-tab="findings">Findings</div>
+      <div class="tab" data-tab="events">Events</div>
+      <div class="tab" data-tab="compare">비행 비교</div>
+    </div>
+
+    <!-- Charts Tab -->
+    <div class="tab-content active" id="tab-charts">
+      <div class="chart-section"><div class="chart-title">고도 (Altitude)</div>
+        <div class="chart-box" id="chartAlt"></div></div>
+      <div class="chart-section"><div class="chart-title">진동 (Vibration)</div>
+        <div class="chart-box" id="chartVibe"></div></div>
+      <div class="chart-section"><div class="chart-title">배터리 (Battery)</div>
+        <div class="chart-box" id="chartBatt"></div></div>
+      <div class="chart-section"><div class="chart-title">자세 (Attitude)</div>
+        <div class="chart-box" id="chartAtt"></div></div>
+      <div class="chart-section"><div class="chart-title">모터 출력 (RCOUT)</div>
+        <div class="chart-box" id="chartRcout"></div></div>
+      <div class="chart-section"><div class="chart-title">EKF Innovation</div>
+        <div class="chart-box" id="chartEkf"></div></div>
+      <div class="chart-section" id="secGpsQ" style="display:none"><div class="chart-title">GPS 품질 (위성 수 / HDop)</div>
+        <div class="chart-box" id="chartGpsQ"></div></div>
+      <div class="chart-section" id="secMotorH" style="display:none"><div class="chart-title">모터 건강도 (대각선 쌍 비교)</div>
+        <div class="chart-box" id="chartMotorH"></div></div>
+      <div class="chart-section" id="secFft" style="display:none"><div class="chart-title">FFT 진동 주파수 분석</div>
+        <div class="chart-box" id="chartFft"></div></div>
+      <div class="chart-section" id="sec3d" style="display:none"><div class="chart-title">3D 비행 경로</div>
+        <div class="chart-box" id="chart3d"></div></div>
+      <div class="chart-section"><div class="chart-title">바람 추정 (Wind)</div>
+        <div class="chart-box" id="chartWind"></div></div>
+      <div class="chart-section"><div class="chart-title">PID 추적 (Roll)</div>
+        <div class="chart-box" id="chartPidRoll"></div></div>
+      <div class="chart-section"><div class="chart-title">PID 추적 (Pitch)</div>
+        <div class="chart-box" id="chartPidPitch"></div></div>
+      <div class="chart-section"><div class="chart-title">GPS 경로</div>
+        <div class="chart-box" id="chartGps"></div></div>
+    </div>
+
+    <!-- Findings Tab -->
+    <div class="tab-content" id="tab-findings">
+      <div class="findings" id="findingsList"></div>
+    </div>
+
+    <!-- Events Tab -->
+    <div class="tab-content" id="tab-events">
+      <div class="findings" id="eventsList"></div>
+    </div>
+
+    <!-- 비행 비교 Tab -->
+    <div class="tab-content" id="tab-compare">
+      <div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:16px;margin-bottom:16px;">
+        <p style="color:var(--dim);font-size:13px;margin-bottom:12px;">2개의 .bin 파일을 선택하면 고도/진동/배터리를 오버레이 비교합니다 (튜닝 전후, 정비 전후 비교에 활용)</p>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+          <label class="btn btn-outline" style="cursor:pointer;">파일 1 선택<input type="file" id="cmpFile1" accept=".bin,.BIN" style="display:none;"></label>
+          <span id="cmpName1" style="color:var(--dim);font-size:12px;">미선택</span>
+          <label class="btn btn-outline" style="cursor:pointer;">파일 2 선택<input type="file" id="cmpFile2" accept=".bin,.BIN" style="display:none;"></label>
+          <span id="cmpName2" style="color:var(--dim);font-size:12px;">미선택</span>
+          <button class="btn btn-primary" onclick="runCompare()" id="cmpBtn">비교 분석</button>
+        </div>
+      </div>
+      <div id="cmpResult" style="display:none;">
+        <div class="kpi-grid" id="cmpKpi"></div>
+        <div class="chart-section"><div class="chart-title">고도 비교</div><div class="chart-box" id="cmpAlt"></div></div>
+        <div class="chart-section"><div class="chart-title">진동(Z) 비교</div><div class="chart-box" id="cmpVibe"></div></div>
+        <div class="chart-section"><div class="chart-title">배터리 비교</div><div class="chart-box" id="cmpBatt"></div></div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<div class="footer">Made by Kim.</div>
+
+<script>
+const MODE_COLORS={STABILIZE:'#4fc3f7',ALT_HOLD:'#29b6f6',LOITER:'#66bb6a',AUTO:'#ab47bc',
+GUIDED:'#7e57c2',RTL:'#ef5350',LAND:'#ff7043',POSHOLD:'#26c6da',ACRO:'#ffa726',
+CIRCLE:'#78909c',SMART_RTL:'#f44336',AUTOTUNE:'#ffee58',BRAKE:'#bdbdbd',FLOWHOLD:'#26a69a'};
+const isMobile=window.innerWidth<=768;
+const PLOT_LAYOUT={paper_bgcolor:'#1a2332',plot_bgcolor:'#0f1923',
+font:{color:'#8899aa',size:isMobile?9:11},
+margin:isMobile?{l:36,r:10,t:8,b:32}:{l:50,r:20,t:10,b:40},
+xaxis:{gridcolor:'#2a3a4e',zerolinecolor:'#2a3a4e',title:{text:'시간 (초)',font:{size:isMobile?9:12}}},
+yaxis:{gridcolor:'#2a3a4e',zerolinecolor:'#2a3a4e'},
+legend:{bgcolor:'transparent',font:{size:isMobile?8:10},orientation:isMobile?'h':'v',
+  y:isMobile?-0.25:1,x:isMobile?0:1,xanchor:isMobile?'left':'right'},
+height:isMobile?220:300};
+
+let DATA=null;
+
+// Drop zone
+const dz=document.getElementById('dropzone');
+const fi=document.getElementById('fileInput');
+dz.addEventListener('dragover',e=>{e.preventDefault();dz.classList.add('drag');});
+dz.addEventListener('dragleave',()=>dz.classList.remove('drag'));
+dz.addEventListener('drop',e=>{e.preventDefault();dz.classList.remove('drag');
+  if(e.dataTransfer.files.length)upload(e.dataTransfer.files[0]);});
+fi.addEventListener('change',e=>{if(e.target.files.length)upload(e.target.files[0]);});
+
+// Tabs
+document.querySelectorAll('.tab').forEach(tab=>{
+  tab.addEventListener('click',()=>{
+    document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
+    document.querySelectorAll('.tab-content').forEach(c=>c.classList.remove('active'));
+    tab.classList.add('active');
+    document.getElementById('tab-'+tab.dataset.tab).classList.add('active');
+  });
+});
+
+async function upload(file){
+  dz.style.display='none';
+  document.getElementById('loading').classList.add('active');
+  const fd=new FormData();
+  fd.append('file',file);
+  try{
+    const res=await fetch('/api/analyze',{method:'POST',body:fd});
+    if(!res.ok)throw new Error(await res.text());
+    DATA=await res.json();
+    render(DATA);
+  }catch(e){
+    alert('분석 실패: '+e.message);
+    reset();
+  }
+}
+
+function render(d){
+  document.getElementById('loading').classList.remove('active');
+  document.getElementById('dashboard').classList.add('active');
+
+  // Badge
+  const badge=document.getElementById('badge');
+  const c=d.counts;
+  if(c.fail>0){badge.className='badge fail';badge.textContent=`FAIL ${c.fail} / WARN ${c.warn} / OK ${c.ok}`;}
+  else if(c.warn>0){badge.className='badge warn';badge.textContent=`WARN ${c.warn} / OK ${c.ok}`;}
+  else{badge.className='badge ok';badge.textContent=`ALL OK (${c.ok})`;}
+
+  // KPI
+  const s=d.summary;
+  const kpis=[
+    ['비행시간',s.duration],['최대 고도',s.max_alt+'m'],['이동거리',s.dist_m+'m'],
+    ['최대 속도',s.max_spd+'m/s'],['배터리 최저',s.v_min+'V'],['최대 전류',s.i_max+'A'],
+    ['GPS 위성',s.min_sats+'~'+s.max_sats],['HDop',s.max_hdop],
+  ];
+  document.getElementById('kpiGrid').innerHTML=kpis.map(([l,v])=>
+    `<div class="kpi"><div class="label">${l}</div><div class="value">${v}</div></div>`).join('');
+
+  // Mode Timeline
+  renderModeBar(d);
+
+  // Charts
+  if(d.timeseries.altitude) plotAltitude(d);
+  if(d.timeseries.vibe) plotVibe(d);
+  if(d.timeseries.battery) plotBattery(d);
+  if(d.timeseries.attitude) plotAttitude(d);
+  if(d.timeseries.rcout) plotRcout(d);
+  if(d.timeseries.ekf) plotEkf(d);
+  // 새 차트들
+  if(d.timeseries.gps_quality){document.getElementById('secGpsQ').style.display='';plotGpsQ(d);}
+  if(d.timeseries.motor_health){document.getElementById('secMotorH').style.display='';plotMotorH(d);}
+  if(d.timeseries.fft){document.getElementById('secFft').style.display='';plotFft(d);}
+  if(d.timeseries.gps3d){document.getElementById('sec3d').style.display='';plot3d(d);}
+  if(d.timeseries.wind) plotWind(d);
+
+  // 비행 점수 레이더
+  if(d.scores) plotRadar(d.scores);
+  // 추가 정보 패널
+  renderExtraInfo(d);
+  if(d.timeseries.pid_roll) plotPid(d, 'pid_roll', 'chartPidRoll', 'Roll');
+  if(d.timeseries.pid_pitch) plotPid(d, 'pid_pitch', 'chartPidPitch', 'Pitch');
+  if(d.timeseries.gps) plotGps(d);
+
+  // Findings
+  renderFindings(d.findings);
+  renderEvents(d.events);
+}
+
+function modeShapes(modes,maxT){
+  const shapes=[];
+  for(let i=0;i<modes.length;i++){
+    const t0=modes[i].t;
+    const t1=i+1<modes.length?modes[i+1].t:maxT;
+    const color=MODE_COLORS[modes[i].name]||'#37474f';
+    shapes.push({type:'rect',xref:'x',yref:'paper',x0:t0,x1:t1,y0:0,y1:1,
+      fillcolor:color,opacity:0.1,line:{width:0}});
+  }
+  return shapes;
+}
+
+function errLines(errTimes){
+  return errTimes.map(t=>({type:'line',xref:'x',yref:'paper',x0:t,x1:t,y0:0,y1:1,
+    line:{color:'#ef5350',width:1,dash:'dash'},opacity:0.5}));
+}
+
+function renderModeBar(d){
+  const bar=document.getElementById('modeBar');
+  if(!d.modes.length){bar.style.display='none';return;}
+  const maxT=d.timeseries.altitude?d.timeseries.altitude.t.slice(-1)[0]:600;
+  bar.innerHTML=d.modes.map((m,i)=>{
+    const t1=i+1<d.modes.length?d.modes[i+1].t:maxT;
+    const pct=((t1-m.t)/maxT*100);
+    const c=MODE_COLORS[m.name]||'#37474f';
+    return `<div class="mode-seg" style="width:${pct}%;background:${c}" data-tip="${m.name} +${Math.round(m.t)}s">${pct>5?m.name:''}</div>`;
+  }).join('');
+}
+
+function plotAltitude(d){
+  const ts=d.timeseries.altitude;
+  const maxT=ts.t.slice(-1)[0]||600;
+  Plotly.newPlot('chartAlt',[
+    {x:ts.t,y:ts.alt,type:'scatter',mode:'lines',name:'고도',line:{color:'#4fc3f7',width:1.5},fill:'tozeroy',fillcolor:'rgba(79,195,247,0.1)'},
+    {x:ts.t,y:ts.spd,type:'scatter',mode:'lines',name:'속도',yaxis:'y2',line:{color:'#ff9800',width:1},opacity:0.7}
+  ],{...PLOT_LAYOUT,yaxis:{...PLOT_LAYOUT.yaxis,title:'m'},yaxis2:{overlaying:'y',side:'right',title:'m/s',gridcolor:'transparent',font:{color:'#ff9800'}},
+    shapes:[...modeShapes(d.modes,maxT),...errLines(d.err_times)]},{responsive:true,scrollZoom:false,displayModeBar:!isMobile});
+}
+
+function plotVibe(d){
+  const ts=d.timeseries.vibe;const maxT=ts.t.slice(-1)[0]||600;
+  Plotly.newPlot('chartVibe',[
+    {x:ts.t,y:ts.x,type:'scatter',mode:'lines',name:'X',line:{color:'#ef5350',width:0.8}},
+    {x:ts.t,y:ts.y,type:'scatter',mode:'lines',name:'Y',line:{color:'#66bb6a',width:0.8}},
+    {x:ts.t,y:ts.z,type:'scatter',mode:'lines',name:'Z',line:{color:'#4fc3f7',width:0.8}},
+  ],{...PLOT_LAYOUT,yaxis:{...PLOT_LAYOUT.yaxis,title:'m/s\u00b2'},
+    shapes:[...modeShapes(d.modes,maxT),...errLines(d.err_times),
+      {type:'line',yref:'y',xref:'paper',x0:0,x1:1,y0:15,y1:15,line:{color:'#fdd835',width:1,dash:'dash'}},
+      {type:'line',yref:'y',xref:'paper',x0:0,x1:1,y0:30,y1:30,line:{color:'#ff9800',width:1,dash:'dash'}},
+      {type:'line',yref:'y',xref:'paper',x0:0,x1:1,y0:60,y1:60,line:{color:'#ef5350',width:1,dash:'dash'}},
+    ]},{responsive:true,scrollZoom:false,displayModeBar:!isMobile});
+}
+
+function plotBattery(d){
+  const ts=d.timeseries.battery;const maxT=ts.t.slice(-1)[0]||600;
+  Plotly.newPlot('chartBatt',[
+    {x:ts.t,y:ts.v,type:'scatter',mode:'lines',name:'전압(V)',line:{color:'#4fc3f7',width:1.5}},
+    {x:ts.t,y:ts.i,type:'scatter',mode:'lines',name:'전류(A)',yaxis:'y2',line:{color:'#ff9800',width:1},opacity:0.7}
+  ],{...PLOT_LAYOUT,yaxis:{...PLOT_LAYOUT.yaxis,title:'V'},yaxis2:{overlaying:'y',side:'right',title:'A',gridcolor:'transparent'},
+    shapes:[...modeShapes(d.modes,maxT),...errLines(d.err_times)]},{responsive:true,scrollZoom:false,displayModeBar:!isMobile});
+}
+
+function plotAttitude(d){
+  const ts=d.timeseries.attitude;const maxT=ts.t.slice(-1)[0]||600;
+  Plotly.newPlot('chartAtt',[
+    {x:ts.t,y:ts.roll,type:'scatter',mode:'lines',name:'Roll',line:{color:'#4fc3f7',width:0.8}},
+    {x:ts.t,y:ts.desroll,type:'scatter',mode:'lines',name:'DesRoll',line:{color:'#26c6da',width:0.6,dash:'dot'}},
+    {x:ts.t,y:ts.pitch,type:'scatter',mode:'lines',name:'Pitch',line:{color:'#66bb6a',width:0.8}},
+    {x:ts.t,y:ts.despitch,type:'scatter',mode:'lines',name:'DesPitch',line:{color:'#81c784',width:0.6,dash:'dot'}},
+  ],{...PLOT_LAYOUT,yaxis:{...PLOT_LAYOUT.yaxis,title:'deg'},height:isMobile?260:350,
+    shapes:[...modeShapes(d.modes,maxT),...errLines(d.err_times)]},{responsive:true,scrollZoom:false,displayModeBar:!isMobile});
+}
+
+function plotRcout(d){
+  const ts=d.timeseries.rcout;const maxT=ts.t.slice(-1)[0]||600;
+  Plotly.newPlot('chartRcout',[
+    {x:ts.t,y:ts.m1,type:'scatter',mode:'lines',name:'M1',line:{color:'#ef5350',width:0.8}},
+    {x:ts.t,y:ts.m2,type:'scatter',mode:'lines',name:'M2',line:{color:'#66bb6a',width:0.8}},
+    {x:ts.t,y:ts.m3,type:'scatter',mode:'lines',name:'M3',line:{color:'#4fc3f7',width:0.8}},
+    {x:ts.t,y:ts.m4,type:'scatter',mode:'lines',name:'M4',line:{color:'#ab47bc',width:0.8}},
+  ],{...PLOT_LAYOUT,yaxis:{...PLOT_LAYOUT.yaxis,title:'PWM'},
+    shapes:[...modeShapes(d.modes,maxT),...errLines(d.err_times)]},{responsive:true,scrollZoom:false,displayModeBar:!isMobile});
+}
+
+function plotEkf(d){
+  const ts=d.timeseries.ekf;const maxT=ts.t.slice(-1)[0]||600;
+  Plotly.newPlot('chartEkf',[
+    {x:ts.t,y:ts.sv,type:'scatter',mode:'lines',name:'SV',line:{color:'#ef5350',width:0.8}},
+    {x:ts.t,y:ts.sp,type:'scatter',mode:'lines',name:'SP',line:{color:'#4fc3f7',width:0.8}},
+    {x:ts.t,y:ts.sh,type:'scatter',mode:'lines',name:'SH',line:{color:'#66bb6a',width:0.8}},
+    {x:ts.t,y:ts.sm,type:'scatter',mode:'lines',name:'SM',line:{color:'#ab47bc',width:0.8}},
+  ],{...PLOT_LAYOUT,yaxis:{...PLOT_LAYOUT.yaxis,title:'ratio'},
+    shapes:[...modeShapes(d.modes,maxT),...errLines(d.err_times),
+      {type:'line',yref:'y',xref:'paper',x0:0,x1:1,y0:0.8,y1:0.8,line:{color:'#ff9800',width:1,dash:'dash'}},
+      {type:'line',yref:'y',xref:'paper',x0:0,x1:1,y0:1.0,y1:1.0,line:{color:'#ef5350',width:1,dash:'dash'}},
+    ]},{responsive:true,scrollZoom:false,displayModeBar:!isMobile});
+}
+
+function plotGps(d){
+  const g=d.timeseries.gps;
+  Plotly.newPlot('chartGps',[
+    {x:g.lon,y:g.lat,type:'scatter',mode:'lines+markers',marker:{size:2,color:Array.from({length:g.lat.length},(_,i)=>i),colorscale:'Plasma'},
+    line:{color:'#4fc3f7',width:1}},
+    {x:[g.lon[0]],y:[g.lat[0]],type:'scatter',mode:'markers',name:'이륙',marker:{size:12,color:'#66bb6a',symbol:'circle'}},
+    {x:[g.lon.slice(-1)[0]],y:[g.lat.slice(-1)[0]],type:'scatter',mode:'markers',name:'착륙',marker:{size:12,color:'#ef5350',symbol:'square'}},
+  ],{...PLOT_LAYOUT,height:isMobile?320:500,xaxis:{...PLOT_LAYOUT.xaxis,title:'경도',scaleanchor:'y'},
+    yaxis:{...PLOT_LAYOUT.yaxis,title:'위도'}},{responsive:true,scrollZoom:false,displayModeBar:!isMobile});
+}
+
+function renderFindings(findings){
+  const sorted=[...findings].sort((a,b)=>({FAIL:0,WARN:1,OK:2}[a.sev])-({FAIL:0,WARN:1,OK:2}[b.sev]));
+  document.getElementById('findingsList').innerHTML=sorted.map(f=>`
+    <div class="finding">
+      <div class="sev ${f.sev}">${f.sev}</div>
+      <div class="body">
+        <h4>${f.title}</h4>
+        ${f.detail?`<p>${f.detail.replace(/\n/g,'<br>')}</p>`:''}
+        ${f.fix?`<p class="fix">${f.fix.replace(/\n/g,'<br>')}</p>`:''}
+      </div>
+    </div>`).join('');
+}
+
+function renderEvents(events){
+  document.getElementById('eventsList').innerHTML=events.map(e=>`
+    <div class="finding">
+      <div class="sev OK" style="background:var(--accent);font-size:10px;">${Math.round(e.t)}s</div>
+      <div class="body"><h4>${e.desc}</h4></div>
+    </div>`).join('');
+}
+
+function plotRadar(scores){
+  Plotly.newPlot('chartRadar',[{
+    type:'scatterpolar',r:[scores.altitude,scores.vibration,scores.battery,scores.gps,scores.safety,scores.altitude],
+    theta:['고도유지','진동','배터리','GPS','안전','고도유지'],
+    fill:'toself',fillcolor:'rgba(79,195,247,0.15)',
+    line:{color:'#4fc3f7',width:2},
+    marker:{size:6,color:'#4fc3f7'},
+    name:`종합 ${scores.overall}점`,
+  }],{...PLOT_LAYOUT,height:isMobile?260:300,
+    polar:{bgcolor:PLOT_LAYOUT.plot_bgcolor,
+      radialaxis:{visible:true,range:[0,100],gridcolor:'#2a3a4e',color:'#8899aa',tickfont:{size:9}},
+      angularaxis:{gridcolor:'#2a3a4e',color:'#e0e0e0',tickfont:{size:isMobile?9:11}}},
+    margin:{l:40,r:40,t:30,b:30},
+    annotations:[{text:`${scores.overall}`,x:0.5,y:0.5,xref:'paper',yref:'paper',
+      showarrow:false,font:{size:32,color:'#4fc3f7',family:'monospace'}}],
+  },{responsive:true,scrollZoom:false,displayModeBar:false});
+}
+
+function renderExtraInfo(d){
+  const el=document.getElementById('extraInfo');
+  let html='';
+  // 모터 건강도
+  if(d.motor_health){
+    const mh=d.motor_health;
+    const color=mh.avg_diff>200?'var(--red)':mh.avg_diff>100?'var(--orange)':'var(--green)';
+    html+=`<div class="kpi" style="border-left:3px solid ${color}">
+      <div class="label">모터 불균형 (대각선 쌍)</div>
+      <div class="value" style="font-size:16px;">평균 ${mh.avg_diff} / 최대 ${mh.max_diff} PWM</div>
+      <div style="font-size:10px;color:var(--dim);">${mh.avg_diff<100?'양호':'점검 필요'}</div></div>`;
+  }
+  // 배터리 내부저항
+  if(d.batt_ir){
+    const ir=d.batt_ir;
+    const color=ir.per_cell_mohm>30?'var(--red)':ir.per_cell_mohm>15?'var(--orange)':'var(--green)';
+    html+=`<div class="kpi" style="border-left:3px solid ${color}">
+      <div class="label">배터리 내부저항 추정</div>
+      <div class="value" style="font-size:16px;">${ir.total_mohm}m&#937; (${ir.cells}S)</div>
+      <div style="font-size:10px;color:var(--dim);">셀당 ${ir.per_cell_mohm}m&#937; &mdash; ${ir.per_cell_mohm<15?'양호':ir.per_cell_mohm<30?'노화 진행':'교체 권장'}</div></div>`;
+  }
+  // 비행 점수 항목별
+  if(d.scores){
+    const sc=d.scores;
+    const items=[['고도유지',sc.altitude],['진동',sc.vibration],['배터리',sc.battery],['GPS',sc.gps],['안전',sc.safety]];
+    html+=`<div class="kpi"><div class="label">비행 점수 상세</div>`;
+    items.forEach(([name,val])=>{
+      const c=val>=80?'var(--green)':val>=50?'var(--orange)':'var(--red)';
+      html+=`<div style="display:flex;justify-content:space-between;padding:2px 0;">
+        <span style="font-size:11px;">${name}</span>
+        <span style="font-size:11px;font-weight:700;color:${c};">${val}</span></div>`;
+    });
+    html+=`</div>`;
+  }
+  el.innerHTML=html;
+}
+
+function plotGpsQ(d){
+  const ts=d.timeseries.gps_quality;const maxT=ts.t.slice(-1)[0]||600;
+  Plotly.newPlot('chartGpsQ',[
+    {x:ts.t,y:ts.nsats,type:'scatter',mode:'lines',name:'위성 수',line:{color:'#66bb6a',width:1}},
+    {x:ts.t,y:ts.hdop,type:'scatter',mode:'lines',name:'HDop',yaxis:'y2',line:{color:'#ff9800',width:1}},
+  ],{...PLOT_LAYOUT,yaxis:{...PLOT_LAYOUT.yaxis,title:'위성 수'},
+    yaxis2:{overlaying:'y',side:'right',title:'HDop',gridcolor:'transparent'},
+    shapes:[...modeShapes(d.modes,maxT),
+      {type:'line',yref:'y2',xref:'paper',x0:0,x1:1,y0:1.5,y1:1.5,line:{color:'#66bb6a',width:0.8,dash:'dash'}},
+      {type:'line',yref:'y2',xref:'paper',x0:0,x1:1,y0:2.0,y1:2.0,line:{color:'#ff9800',width:0.8,dash:'dash'}},
+    ]},{responsive:true,scrollZoom:false,displayModeBar:!isMobile});
+}
+
+function plotMotorH(d){
+  const ts=d.timeseries.motor_health;const maxT=ts.t.slice(-1)[0]||600;
+  Plotly.newPlot('chartMotorH',[
+    {x:ts.t,y:ts.diag_a,type:'scatter',mode:'lines',name:'대각선 A (M1+M2)',line:{color:'#4fc3f7',width:0.8}},
+    {x:ts.t,y:ts.diag_b,type:'scatter',mode:'lines',name:'대각선 B (M3+M4)',line:{color:'#ff9800',width:0.8}},
+    {x:ts.t,y:ts.diff,type:'scatter',mode:'lines',name:'차이',line:{color:'#ef5350',width:0.6},fill:'tozeroy',fillcolor:'rgba(239,83,80,0.1)'},
+  ],{...PLOT_LAYOUT,yaxis:{...PLOT_LAYOUT.yaxis,title:'PWM'},
+    shapes:[...modeShapes(d.modes,maxT)]},{responsive:true,scrollZoom:false,displayModeBar:!isMobile});
+}
+
+// 테마 토글
+let isDark=true;
+function toggleTheme(){
+  isDark=!isDark;
+  const r=document.documentElement.style;
+  if(isDark){
+    r.setProperty('--bg','#0f1923');r.setProperty('--card','#1a2332');
+    r.setProperty('--border','#2a3a4e');r.setProperty('--text','#e0e0e0');
+    r.setProperty('--dim','#8899aa');
+    document.getElementById('themeBtn').innerHTML='&#9728; Light';
+  }else{
+    r.setProperty('--bg','#f5f5f5');r.setProperty('--card','#ffffff');
+    r.setProperty('--border','#e0e0e0');r.setProperty('--text','#333333');
+    r.setProperty('--dim','#666666');
+    document.getElementById('themeBtn').innerHTML='&#9790; Dark';
+  }
+}
+
+function plotFft(d){
+  const f=d.timeseries.fft;
+  const traces=[];
+  if(f.x)traces.push({x:f.freq,y:f.x,type:'scatter',mode:'lines',name:'X',line:{color:'#ef5350',width:0.8}});
+  if(f.y)traces.push({x:f.freq,y:f.y,type:'scatter',mode:'lines',name:'Y',line:{color:'#66bb6a',width:0.8}});
+  if(f.z)traces.push({x:f.freq,y:f.z,type:'scatter',mode:'lines',name:'Z',line:{color:'#4fc3f7',width:0.8}});
+  Plotly.newPlot('chartFft',traces,{...PLOT_LAYOUT,height:isMobile?250:320,
+    xaxis:{...PLOT_LAYOUT.xaxis,title:{text:'주파수 (Hz)'},type:'log'},
+    yaxis:{...PLOT_LAYOUT.yaxis,title:'크기 (m/s²)'},
+    annotations:[{x:Math.log10(f.fs/2),y:1,xref:'x',yref:'paper',text:`Fs=${f.fs}Hz`,showarrow:false,font:{color:'#8899aa',size:10}}],
+  },{responsive:true,scrollZoom:false,displayModeBar:!isMobile});
+}
+
+function plot3d(d){
+  const g=d.timeseries.gps3d;
+  Plotly.newPlot('chart3d',[{
+    x:g.lon,y:g.lat,z:g.alt,type:'scatter3d',mode:'lines+markers',
+    marker:{size:2,color:g.alt,colorscale:'Viridis',colorbar:{title:'Alt(m)',thickness:12,len:0.6}},
+    line:{color:'#4fc3f7',width:2},
+  },{
+    x:[g.lon[0]],y:[g.lat[0]],z:[g.alt[0]],type:'scatter3d',mode:'markers',
+    name:'이륙',marker:{size:8,color:'#66bb6a',symbol:'circle'},
+  },{
+    x:[g.lon.slice(-1)[0]],y:[g.lat.slice(-1)[0]],z:[g.alt.slice(-1)[0]],type:'scatter3d',mode:'markers',
+    name:'착륙',marker:{size:8,color:'#ef5350',symbol:'square'},
+  }],{...PLOT_LAYOUT,height:isMobile?350:500,
+    scene:{
+      xaxis:{title:'경도',gridcolor:'#2a3a4e',backgroundcolor:PLOT_LAYOUT.plot_bgcolor},
+      yaxis:{title:'위도',gridcolor:'#2a3a4e',backgroundcolor:PLOT_LAYOUT.plot_bgcolor},
+      zaxis:{title:'고도(m)',gridcolor:'#2a3a4e',backgroundcolor:PLOT_LAYOUT.plot_bgcolor},
+      bgcolor:PLOT_LAYOUT.plot_bgcolor,
+      camera:{eye:{x:1.5,y:1.5,z:0.8}},
+    },margin:{l:0,r:0,t:10,b:0},
+  },{responsive:true,scrollZoom:true,displayModeBar:!isMobile});
+}
+
+function plotWind(d){
+  const ts=d.timeseries.wind;const maxT=ts.t.slice(-1)[0]||600;
+  Plotly.newPlot('chartWind',[
+    {x:ts.t,y:ts.spd,type:'scatter',mode:'lines',name:'풍속(m/s)',line:{color:'#26c6da',width:1.2},fill:'tozeroy',fillcolor:'rgba(38,198,218,0.1)'},
+    {x:ts.t,y:ts.dir,type:'scatter',mode:'lines',name:'풍향(°)',yaxis:'y2',line:{color:'#ff9800',width:0.6},opacity:0.5},
+  ],{...PLOT_LAYOUT,yaxis:{...PLOT_LAYOUT.yaxis,title:'m/s'},yaxis2:{overlaying:'y',side:'right',title:'°',gridcolor:'transparent'},
+    shapes:[...modeShapes(d.modes,maxT)]},{responsive:true,scrollZoom:false,displayModeBar:!isMobile});
+}
+
+function plotPid(d,key,divId,label){
+  const ts=d.timeseries[key]; if(!ts) return;
+  const maxT=ts.t.slice(-1)[0]||600;
+  Plotly.newPlot(divId,[
+    {x:ts.t,y:ts.tar,type:'scatter',mode:'lines',name:label+' Target',line:{color:'#26c6da',width:0.6}},
+    {x:ts.t,y:ts.act,type:'scatter',mode:'lines',name:label+' Actual',line:{color:'#4fc3f7',width:0.8}},
+  ],{...PLOT_LAYOUT,yaxis:{...PLOT_LAYOUT.yaxis,title:'deg/s'},
+    shapes:[...modeShapes(d.modes,maxT),...errLines(d.err_times)]},{responsive:true,scrollZoom:false,displayModeBar:!isMobile});
+}
+
+// 비교 파일 이름 표시
+document.getElementById('cmpFile1').addEventListener('change',e=>{
+  document.getElementById('cmpName1').textContent=e.target.files[0]?.name||'미선택';});
+document.getElementById('cmpFile2').addEventListener('change',e=>{
+  document.getElementById('cmpName2').textContent=e.target.files[0]?.name||'미선택';});
+
+async function runCompare(){
+  const f1=document.getElementById('cmpFile1').files[0];
+  const f2=document.getElementById('cmpFile2').files[0];
+  if(!f1||!f2){alert('2개 파일을 모두 선택하세요');return;}
+  const btn=document.getElementById('cmpBtn');
+  btn.textContent='비교 분석 중...';btn.disabled=true;
+  const fd=new FormData();fd.append('file1',f1);fd.append('file2',f2);
+  try{
+    const resp=await fetch('/api/compare',{method:'POST',body:fd});
+    const data=await resp.json();
+    renderCompare(data.logs);
+  }catch(e){alert('비교 실패: '+e.message);}
+  btn.textContent='비교 분석';btn.disabled=false;
+}
+
+function renderCompare(logs){
+  document.getElementById('cmpResult').style.display='block';
+  const c=['#4fc3f7','#ff9800'];
+  // KPI 비교
+  document.getElementById('cmpKpi').innerHTML=logs.map((l,i)=>
+    `<div class="kpi" style="border-left:3px solid ${c[i]}">
+      <div class="label">${l.filename}</div>
+      <div class="value" style="font-size:14px;">FAIL ${l.counts.fail} / WARN ${l.counts.warn}</div>
+      <div style="font-size:11px;color:var(--dim);">${l.summary.duration} | ${l.summary.max_alt}m | ${l.summary.v_min}V</div>
+    </div>`).join('');
+  // 오버레이 차트
+  const pairs=[['alt','cmpAlt','고도(m)'],['vibe_z','cmpVibe','진동Z(m/s²)'],['batt','cmpBatt','전압(V)']];
+  pairs.forEach(([key,divId,ylabel])=>{
+    const traces=[];
+    logs.forEach((l,i)=>{
+      if(l[key])traces.push({x:l[key].t,y:l[key].v,type:'scatter',mode:'lines',
+        name:l.filename,line:{color:c[i],width:1}});
+    });
+    if(traces.length)
+      Plotly.newPlot(divId,traces,{...PLOT_LAYOUT,yaxis:{...PLOT_LAYOUT.yaxis,title:ylabel}},
+        {responsive:true,scrollZoom:false,displayModeBar:!isMobile});
+  });
+}
+
+function downloadPdf(){
+  if(!DATA)return;
+  window.open(`/api/pdf/${DATA.job_id}`,'_blank');
+}
+
+function reset(){
+  document.getElementById('dashboard').classList.remove('active');
+  document.getElementById('loading').classList.remove('active');
+  document.getElementById('dropzone').style.display='';
+  document.getElementById('fileInput').value='';
+  DATA=null;
+}
+</script>
+</body>
+</html>
