@@ -9,6 +9,8 @@
 <meta name="format-detection" content="telephone=no">
 <title>ArduCopter Log Analyzer</title>
 <script src="https://cdn.plot.ly/plotly-2.35.0.min.js"></script>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <style>
 :root{--bg:#0f1923;--card:#1a2332;--border:#2a3a4e;--text:#e0e0e0;--dim:#8899aa;
 --blue:#4fc3f7;--green:#66bb6a;--yellow:#fdd835;--orange:#ff9800;--red:#ef5350;
@@ -190,9 +192,9 @@ border:1px solid transparent;transition:all .2s;white-space:nowrap;}
 
   <!-- Drop Zone -->
   <div class="dropzone" id="dropzone" onclick="document.getElementById('fileInput').click()">
-    <h2>.bin 파일을 여기에 드래그하세요</h2>
-    <p>또는 클릭하여 파일 선택 (ArduCopter DataFlash .bin)</p>
-    <input type="file" id="fileInput" accept=".bin,.BIN">
+    <h2>비행 로그 파일을 여기에 드래그하세요</h2>
+    <p>또는 클릭하여 파일 선택 (.bin / .tlog / .ulg 지원)</p>
+    <input type="file" id="fileInput" accept=".bin,.BIN,.tlog,.TLOG,.ulg,.ULG">
   </div>
 
   <!-- Loading -->
@@ -235,6 +237,8 @@ border:1px solid transparent;transition:all .2s;white-space:nowrap;}
       <div class="tab" data-tab="charts">Charts</div>
       <div class="tab" data-tab="findings">Findings</div>
       <div class="tab" data-tab="params">파라미터</div>
+      <div class="tab" data-tab="correlate">상관 분석</div>
+      <div class="tab" data-tab="trends">트렌드</div>
       <div class="tab" data-tab="compare">비행 비교</div>
     </div>
 
@@ -294,8 +298,10 @@ border:1px solid transparent;transition:all .2s;white-space:nowrap;}
         <div class="chart-box" id="chartHover"></div></div>
       <div class="chart-section" id="secPhases" style="display:none"><div class="chart-title">비행 구간 분류</div>
         <div class="chart-box" id="chartPhases"></div></div>
-      <div class="chart-section"><div class="chart-title">GPS 경로</div>
+      <div class="chart-section"><div class="chart-title">GPS 경로 (Plotly)</div>
         <div class="chart-box" id="chartGps"></div></div>
+      <div class="chart-section" id="secSatMap" style="display:none"><div class="chart-title">위성 지도 비행 경로</div>
+        <div class="chart-box" id="satMap" style="height:500px;"></div></div>
     </div>
 
     <!-- Findings Tab -->
@@ -309,13 +315,51 @@ border:1px solid transparent;transition:all .2s;white-space:nowrap;}
     </div>
 
     <!-- 비행 비교 Tab -->
+    <!-- 상관 분석 Tab -->
+    <div class="tab-content" id="tab-correlate">
+      <div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:16px;margin-bottom:12px;">
+        <p style="color:var(--dim);font-size:13px;margin-bottom:12px;">두 데이터 축을 선택하면 시계열 오버레이 + 상관계수를 계산합니다</p>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;">
+          <select id="corrAxis1" style="padding:8px;border-radius:6px;border:1px solid var(--border);background:var(--card);color:var(--text);font-size:12px;">
+            <option value="alt">고도</option><option value="vibe_z">진동 Z</option>
+            <option value="batt_v">배터리 V</option><option value="batt_i">전류 A</option>
+            <option value="roll">Roll</option><option value="pitch">Pitch</option>
+            <option value="m1">모터1</option><option value="m2">모터2</option>
+            <option value="m3">모터3</option><option value="m4">모터4</option>
+            <option value="spd">속도</option>
+          </select>
+          <span style="color:var(--dim);">vs</span>
+          <select id="corrAxis2" style="padding:8px;border-radius:6px;border:1px solid var(--border);background:var(--card);color:var(--text);font-size:12px;">
+            <option value="vibe_z">진동 Z</option><option value="alt">고도</option>
+            <option value="batt_v">배터리 V</option><option value="batt_i">전류 A</option>
+            <option value="roll">Roll</option><option value="pitch">Pitch</option>
+            <option value="m1">모터1</option><option value="m2">모터2</option>
+            <option value="m3">모터3</option><option value="m4">모터4</option>
+            <option value="spd">속도</option>
+          </select>
+          <button class="btn btn-primary" onclick="runCorrelation()" style="padding:8px 16px;font-size:12px;">분석</button>
+          <span id="corrResult" style="font-size:14px;font-weight:700;"></span>
+        </div>
+      </div>
+      <div class="chart-box" id="chartCorr"></div>
+    </div>
+
+    <!-- 트렌드 Tab -->
+    <div class="tab-content" id="tab-trends">
+      <div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:16px;margin-bottom:12px;">
+        <p style="color:var(--dim);font-size:13px;margin-bottom:12px;">같은 사용자의 과거 로그를 비교하여 비행 품질 트렌드를 보여줍니다</p>
+        <button class="btn btn-primary" onclick="loadTrends()" style="padding:8px 16px;font-size:12px;">트렌드 로드</button>
+      </div>
+      <div class="chart-box" id="chartTrend" style="min-height:300px;"></div>
+    </div>
+
     <div class="tab-content" id="tab-compare">
       <div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:16px;margin-bottom:16px;">
         <p style="color:var(--dim);font-size:13px;margin-bottom:12px;">2개의 .bin 파일을 선택하면 고도/진동/배터리를 오버레이 비교합니다 (튜닝 전후, 정비 전후 비교에 활용)</p>
         <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
-          <label class="btn btn-outline" style="cursor:pointer;">파일 1 선택<input type="file" id="cmpFile1" accept=".bin,.BIN" style="display:none;"></label>
+          <label class="btn btn-outline" style="cursor:pointer;">파일 1 선택<input type="file" id="cmpFile1" accept=".bin,.BIN,.tlog,.TLOG,.ulg,.ULG" style="display:none;"></label>
           <span id="cmpName1" style="color:var(--dim);font-size:12px;">미선택</span>
-          <label class="btn btn-outline" style="cursor:pointer;">파일 2 선택<input type="file" id="cmpFile2" accept=".bin,.BIN" style="display:none;"></label>
+          <label class="btn btn-outline" style="cursor:pointer;">파일 2 선택<input type="file" id="cmpFile2" accept=".bin,.BIN,.tlog,.TLOG,.ulg,.ULG" style="display:none;"></label>
           <span id="cmpName2" style="color:var(--dim);font-size:12px;">미선택</span>
           <button class="btn btn-primary" onclick="runCompare()" id="cmpBtn">비교 분석</button>
         </div>
@@ -492,6 +536,7 @@ function render(d){
   if(d.timeseries.pid_roll) plotPid(d, 'pid_roll', 'chartPidRoll', 'Roll');
   if(d.timeseries.pid_pitch) plotPid(d, 'pid_pitch', 'chartPidPitch', 'Pitch');
   if(d.timeseries.gps) plotGps(d);
+  if(d.timeseries.gps) plotSatMap(d);
 
   // New charts
   if(d.timeseries.esc_0||d.timeseries.esc_1){document.getElementById('secEsc').style.display='';plotEscChart(d);}
@@ -616,6 +661,127 @@ function plotGps(d){
     {x:[g.lon.slice(-1)[0]],y:[g.lat.slice(-1)[0]],type:'scatter',mode:'markers',name:'착륙',marker:{size:12,color:'#ef5350',symbol:'square'}},
   ],{...PLOT_LAYOUT,height:isMobile?320:500,xaxis:{...PLOT_LAYOUT.xaxis,title:'경도',scaleanchor:'y'},
     yaxis:{...PLOT_LAYOUT.yaxis,title:'위도'}},{responsive:true,scrollZoom:false,displayModeBar:!isMobile});
+}
+
+// ── 위성 지도 오버레이 (Leaflet) ──
+let satMapInstance=null;
+function plotSatMap(d){
+  if(!d.timeseries.gps||d.timeseries.gps.lat.length<3)return;
+  document.getElementById('secSatMap').style.display='';
+  const g=d.timeseries.gps;
+  const coords=g.lat.map((lat,i)=>[lat,g.lon[i]]);
+
+  if(satMapInstance){satMapInstance.remove();satMapInstance=null;}
+  const map=L.map('satMap',{scrollWheelZoom:true});
+  satMapInstance=map;
+
+  // 위성 타일 (Esri)
+  L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',{
+    attribution:'Esri',maxZoom:19}).addTo(map);
+
+  // 비행 경로
+  const path=L.polyline(coords,{color:'#4fc3f7',weight:3,opacity:0.8}).addTo(map);
+
+  // 이륙/착륙 마커
+  L.circleMarker(coords[0],{radius:10,color:'#66bb6a',fillColor:'#66bb6a',fillOpacity:0.8}).addTo(map).bindPopup('이륙');
+  L.circleMarker(coords[coords.length-1],{radius:10,color:'#ef5350',fillColor:'#ef5350',fillOpacity:0.8}).addTo(map).bindPopup('착륙');
+
+  // 에러 시점 마커
+  if(d.err_times&&d.err_times.length&&d.timeseries.altitude){
+    const altTs=d.timeseries.altitude.t;
+    d.err_times.forEach(et=>{
+      // 가장 가까운 GPS 포인트 찾기
+      let minDist=Infinity,idx=0;
+      altTs.forEach((t,i)=>{if(Math.abs(t-et)<minDist){minDist=Math.abs(t-et);idx=i;}});
+      if(idx<coords.length){
+        L.circleMarker(coords[Math.min(idx,coords.length-1)],{radius:6,color:'#ef5350',fillColor:'#ef5350',fillOpacity:0.9})
+          .addTo(map).bindPopup(`에러 @${Math.round(et)}초`);
+      }
+    });
+  }
+
+  map.fitBounds(path.getBounds(),{padding:[30,30]});
+  setTimeout(()=>map.invalidateSize(),200);
+}
+
+// ── 인터랙티브 상관 분석 ──
+function getAxisData(d,key){
+  const ts=d.timeseries;
+  const map={
+    alt:{t:ts.altitude?.t,v:ts.altitude?.alt,label:'고도(m)'},
+    spd:{t:ts.altitude?.t,v:ts.altitude?.spd,label:'속도(m/s)'},
+    vibe_z:{t:ts.vibe?.t,v:ts.vibe?.z,label:'진동Z(m/s²)'},
+    batt_v:{t:ts.battery?.t,v:ts.battery?.v,label:'배터리(V)'},
+    batt_i:{t:ts.battery?.t,v:ts.battery?.i,label:'전류(A)'},
+    roll:{t:ts.attitude?.t,v:ts.attitude?.roll,label:'Roll(°)'},
+    pitch:{t:ts.attitude?.t,v:ts.attitude?.pitch,label:'Pitch(°)'},
+    m1:{t:ts.rcout?.t,v:ts.rcout?.m1,label:'모터1(PWM)'},
+    m2:{t:ts.rcout?.t,v:ts.rcout?.m2,label:'모터2(PWM)'},
+    m3:{t:ts.rcout?.t,v:ts.rcout?.m3,label:'모터3(PWM)'},
+    m4:{t:ts.rcout?.t,v:ts.rcout?.m4,label:'모터4(PWM)'},
+  };
+  return map[key]||null;
+}
+
+function runCorrelation(){
+  if(!DATA)return;
+  const k1=document.getElementById('corrAxis1').value;
+  const k2=document.getElementById('corrAxis2').value;
+  const a1=getAxisData(DATA,k1), a2=getAxisData(DATA,k2);
+  if(!a1?.v||!a2?.v){document.getElementById('corrResult').textContent='데이터 없음';return;}
+
+  // 시간 정렬 — 짧은 쪽에 맞춰 보간
+  const minLen=Math.min(a1.v.length,a2.v.length);
+  const step=Math.max(1,Math.floor(minLen/2000));
+  const v1=[],v2=[],t=[];
+  for(let i=0;i<minLen;i+=step){v1.push(a1.v[i]);v2.push(a2.v[Math.min(i,a2.v.length-1)]);t.push(a1.t[i]);}
+
+  // 피어슨 상관계수 계산
+  const n=v1.length;
+  let sx=0,sy=0,sxx=0,syy=0,sxy=0;
+  for(let i=0;i<n;i++){sx+=v1[i];sy+=v2[i];sxx+=v1[i]*v1[i];syy+=v2[i]*v2[i];sxy+=v1[i]*v2[i];}
+  const denom=Math.sqrt((n*sxx-sx*sx)*(n*syy-sy*sy));
+  const r=denom>0?(n*sxy-sx*sy)/denom:0;
+
+  const rc=Math.abs(r)>0.5?'var(--red)':Math.abs(r)>0.3?'var(--orange)':'var(--green)';
+  document.getElementById('corrResult').innerHTML=`<span style="color:${rc}">r = ${r.toFixed(3)}</span>`;
+
+  Plotly.newPlot('chartCorr',[
+    {x:t,y:v1,type:'scatter',mode:'lines',name:a1.label,line:{color:'#4fc3f7',width:1}},
+    {x:t,y:v2,type:'scatter',mode:'lines',name:a2.label,yaxis:'y2',line:{color:'#ff9800',width:1}},
+  ],{...PLOT_LAYOUT,height:350,
+    yaxis:{...PLOT_LAYOUT.yaxis,title:a1.label},
+    yaxis2:{overlaying:'y',side:'right',title:a2.label,gridcolor:'transparent'},
+    title:{text:`상관계수 r=${r.toFixed(3)}`,font:{color:rc,size:14}},
+  },{responsive:true,scrollZoom:false,displayModeBar:!isMobile});
+}
+
+// ── 다중 비행 트렌드 ──
+async function loadTrends(){
+  const uid=document.getElementById('userId').value.trim();
+  if(!uid){alert('사용자 ID를 입력하세요');return;}
+  try{
+    const res=await fetch(`/api/logs/${encodeURIComponent(uid)}`);
+    const data=await res.json();
+    if(data.logs.length<2){
+      document.getElementById('chartTrend').innerHTML='<div style="padding:20px;color:var(--dim);">트렌드 분석에는 최소 2건의 로그가 필요합니다.</div>';
+      return;
+    }
+    const logs=data.logs.reverse(); // 시간순
+    const dates=logs.map(l=>l.uploaded_at.substring(0,16));
+    Plotly.newPlot('chartTrend',[
+      {x:dates,y:logs.map(l=>l.score||0),type:'scatter',mode:'lines+markers',name:'종합 점수',
+        line:{color:'#4fc3f7',width:2},marker:{size:8}},
+      {x:dates,y:logs.map(l=>l.fail_count),type:'bar',name:'FAIL',marker:{color:'rgba(239,83,80,0.5)'},yaxis:'y2'},
+      {x:dates,y:logs.map(l=>l.warn_count),type:'bar',name:'WARN',marker:{color:'rgba(255,152,0,0.5)'},yaxis:'y2'},
+    ],{...PLOT_LAYOUT,height:400,barmode:'stack',
+      yaxis:{...PLOT_LAYOUT.yaxis,title:'점수',range:[0,100]},
+      yaxis2:{overlaying:'y',side:'right',title:'에러 수',gridcolor:'transparent'},
+      title:{text:`${uid} 비행 품질 트렌드 (${logs.length}회)`,font:{color:'#4fc3f7',size:14}},
+    },{responsive:true,scrollZoom:false,displayModeBar:!isMobile});
+  }catch(e){
+    document.getElementById('chartTrend').innerHTML=`<div style="padding:20px;color:var(--red);">${e.message}</div>`;
+  }
 }
 
 function renderFindings(findings){

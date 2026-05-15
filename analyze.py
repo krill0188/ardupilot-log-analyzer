@@ -101,10 +101,209 @@ SEV_COLORS = {'OK': C_GREEN, 'WARN': C_YELLOW, 'FAIL': C_RED}
 class LogParser:
     def __init__(self, filepath: str):
         self.filepath = filepath
-        self.mlog = mavutil.mavlink_connection(filepath)
+        self.log_format = self._detect_format(filepath)
+        if self.log_format == 'ulg':
+            self.mlog = None
+        else:
+            # .bin 또는 .tlog — pymavlink으로 동일 처리
+            self.mlog = mavutil.mavlink_connection(filepath)
         self.data: dict = {}
         self.inventory: dict = {}   # 1차: 전체 메시지 인벤토리
-        self._parse()
+        if self.log_format == 'ulg':
+            self._parse_ulog(filepath)
+        else:
+            self._parse()
+
+    @staticmethod
+    def _detect_format(filepath: str) -> str:
+        """파일 확장자 + 매직바이트로 포맷 감지"""
+        ext = os.path.splitext(filepath)[1].lower()
+        if ext == '.ulg':
+            return 'ulg'
+        if ext == '.tlog':
+            return 'tlog'
+        # .bin 또는 기타
+        return 'bin'
+
+    def _parse_ulog(self, filepath: str):
+        """PX4 ULog 파싱 → ArduPilot 호환 데이터 구조로 변환"""
+        from pyulog import ULog
+        ulog = ULog(filepath)
+
+        # 분석용 타입 초기화
+        analysis_types = {
+            'GPS','ATT','VIBE','BAT','BATT','CURR',
+            'EKF4','CTUN','RCIN','RCOU','MODE','MSG',
+            'ERR','EV','PM','IMU','NKF4','XKF4',
+            'PARM','CMD','POS','RATE',
+            'ESC','MOTB','POWR','MAG','MAG2',
+            'NKF2','XKF2','PIDR','PIDP','PIDY',
+            'BARO','RSSI',
+        }
+        for t in analysis_types:
+            self.data[t] = []
+
+        # ULog 타임스탬프: 마이크로초 → 초
+        t0_us = 0
+
+        # 인벤토리 수집
+        for ds in ulog.data_list:
+            topic = ds.name
+            fields = list(ds.data.keys())
+            n = len(ds.data.get('timestamp', []))
+            self.inventory[topic] = {
+                'count': n,
+                'fields': fields,
+                'sample': {k: float(ds.data[k][0]) if n > 0 else 0 for k in fields[:10]},
+            }
+
+        # ULog → ArduPilot 호환 매핑
+        # vehicle_gps_position → GPS
+        for ds in ulog.data_list:
+            topic = ds.name
+            n = len(ds.data.get('timestamp', []))
+            if n == 0:
+                continue
+            timestamps = ds.data['timestamp'] / 1e6  # us → sec
+
+            if topic == 'vehicle_gps_position':
+                for i in range(n):
+                    self.data['GPS'].append({
+                        '_ts': float(timestamps[i]),
+                        'Lat': float(ds.data.get('latitude_deg', ds.data.get('lat', np.zeros(n)))[i]),
+                        'Lng': float(ds.data.get('longitude_deg', ds.data.get('lon', np.zeros(n)))[i]),
+                        'Alt': float(ds.data.get('altitude_msl_m', ds.data.get('alt', np.zeros(n)))[i]),
+                        'Spd': float(ds.data.get('vel_m_s', np.zeros(n))[i]) if 'vel_m_s' in ds.data else 0,
+                        'NSats': int(ds.data.get('satellites_used', np.zeros(n))[i]) if 'satellites_used' in ds.data else 0,
+                        'HDop': float(ds.data.get('hdop', np.zeros(n))[i]) if 'hdop' in ds.data else 1.0,
+                    })
+
+            elif topic == 'vehicle_attitude':
+                for i in range(n):
+                    # 쿼터니언 → 오일러 변환
+                    q0 = float(ds.data.get('q[0]', np.ones(n))[i])
+                    q1 = float(ds.data.get('q[1]', np.zeros(n))[i])
+                    q2 = float(ds.data.get('q[2]', np.zeros(n))[i])
+                    q3 = float(ds.data.get('q[3]', np.zeros(n))[i])
+                    roll = np.degrees(np.arctan2(2*(q0*q1+q2*q3), 1-2*(q1**2+q2**2)))
+                    pitch = np.degrees(np.arcsin(np.clip(2*(q0*q2-q3*q1), -1, 1)))
+                    yaw = np.degrees(np.arctan2(2*(q0*q3+q1*q2), 1-2*(q2**2+q3**2)))
+                    self.data['ATT'].append({
+                        '_ts': float(timestamps[i]),
+                        'Roll': roll, 'Pitch': pitch, 'Yaw': yaw,
+                        'DesRoll': 0, 'DesPitch': 0,
+                    })
+
+            elif topic == 'sensor_combined' or topic == 'vehicle_imu':
+                for i in range(n):
+                    self.data['IMU'].append({
+                        '_ts': float(timestamps[i]),
+                        'AccX': float(ds.data.get('accelerometer_m_s2[0]', np.zeros(n))[i]),
+                        'AccY': float(ds.data.get('accelerometer_m_s2[1]', np.zeros(n))[i]),
+                        'AccZ': float(ds.data.get('accelerometer_m_s2[2]', np.zeros(n))[i]),
+                        'GyrX': float(ds.data.get('gyro_rad[0]', np.zeros(n))[i]),
+                        'GyrY': float(ds.data.get('gyro_rad[1]', np.zeros(n))[i]),
+                        'GyrZ': float(ds.data.get('gyro_rad[2]', np.zeros(n))[i]),
+                    })
+
+            elif topic == 'battery_status':
+                for i in range(n):
+                    self.data['BAT'].append({
+                        '_ts': float(timestamps[i]),
+                        'Volt': float(ds.data.get('voltage_v', ds.data.get('voltage_filtered_v', np.zeros(n)))[i]),
+                        'VoltR': float(ds.data.get('voltage_filtered_v', np.zeros(n))[i]),
+                        'Curr': float(ds.data.get('current_a', ds.data.get('current_filtered_a', np.zeros(n)))[i]),
+                        'CurrTot': float(ds.data.get('discharged_mah', np.zeros(n))[i]) if 'discharged_mah' in ds.data else 0,
+                        'RemPct': float(ds.data.get('remaining', np.zeros(n))[i]) * 100 if 'remaining' in ds.data else 0,
+                    })
+
+            elif topic == 'sensor_baro' or topic == 'vehicle_air_data':
+                for i in range(n):
+                    self.data['BARO'].append({
+                        '_ts': float(timestamps[i]),
+                        'Alt': float(ds.data.get('altitude', ds.data.get('baro_alt_meter', np.zeros(n)))[i]),
+                        'Press': float(ds.data.get('pressure', np.zeros(n))[i]) if 'pressure' in ds.data else 0,
+                        'Temp': float(ds.data.get('temperature', np.zeros(n))[i]) if 'temperature' in ds.data else 0,
+                    })
+
+            elif topic == 'sensor_mag' or topic == 'vehicle_magnetometer':
+                for i in range(n):
+                    self.data['MAG'].append({
+                        '_ts': float(timestamps[i]),
+                        'MagX': float(ds.data.get('x', ds.data.get('magnetometer_ga[0]', np.zeros(n)))[i]),
+                        'MagY': float(ds.data.get('y', ds.data.get('magnetometer_ga[1]', np.zeros(n)))[i]),
+                        'MagZ': float(ds.data.get('z', ds.data.get('magnetometer_ga[2]', np.zeros(n)))[i]),
+                    })
+
+            elif topic == 'actuator_outputs':
+                for i in range(n):
+                    self.data['RCOU'].append({
+                        '_ts': float(timestamps[i]),
+                        'C1': float(ds.data.get('output[0]', np.zeros(n))[i]),
+                        'C2': float(ds.data.get('output[1]', np.zeros(n))[i]),
+                        'C3': float(ds.data.get('output[2]', np.zeros(n))[i]),
+                        'C4': float(ds.data.get('output[3]', np.zeros(n))[i]),
+                    })
+
+            elif topic == 'input_rc':
+                for i in range(n):
+                    self.data['RCIN'].append({
+                        '_ts': float(timestamps[i]),
+                        'C1': float(ds.data.get('values[0]', np.zeros(n))[i]),
+                        'C2': float(ds.data.get('values[1]', np.zeros(n))[i]),
+                        'C3': float(ds.data.get('values[2]', np.zeros(n))[i]),
+                        'C4': float(ds.data.get('values[3]', np.zeros(n))[i]),
+                    })
+
+            elif topic == 'vehicle_local_position':
+                for i in range(n):
+                    self.data['POS'].append({
+                        '_ts': float(timestamps[i]),
+                        'Lat': 0, 'Lng': 0,  # local frame
+                        'Alt': float(ds.data.get('z', np.zeros(n))[i]) * -1,  # NED → alt
+                        'RelHomeAlt': float(ds.data.get('z', np.zeros(n))[i]) * -1,
+                    })
+
+            elif topic == 'estimator_status':
+                for i in range(n):
+                    self.data['NKF4'].append({
+                        '_ts': float(timestamps[i]),
+                        'SV': float(ds.data.get('vel_test_ratio', np.zeros(n))[i]) if 'vel_test_ratio' in ds.data else 0,
+                        'SP': float(ds.data.get('pos_test_ratio', np.zeros(n))[i]) if 'pos_test_ratio' in ds.data else 0,
+                        'SH': float(ds.data.get('hgt_test_ratio', np.zeros(n))[i]) if 'hgt_test_ratio' in ds.data else 0,
+                        'SM': float(ds.data.get('mag_test_ratio', np.zeros(n))[i]) if 'mag_test_ratio' in ds.data else 0,
+                    })
+
+        # PARM — ULog parameters
+        if ulog.initial_parameters:
+            for key, val in ulog.initial_parameters.items():
+                self.data['PARM'].append({
+                    '_ts': 0, 'Name': key, 'Value': float(val),
+                })
+
+        # MODE — ULog vehicle_status (flight mode changes)
+        for ds in ulog.data_list:
+            if ds.name == 'vehicle_status':
+                timestamps = ds.data['timestamp'] / 1e6
+                nav_state = ds.data.get('nav_state', np.zeros(len(timestamps)))
+                prev_mode = -1
+                PX4_MODES = {0:'MANUAL',1:'ALTCTL',2:'POSCTL',3:'AUTO_MISSION',4:'AUTO_LOITER',
+                             5:'AUTO_RTL',6:'ACRO',8:'OFFBOARD',10:'AUTO_TAKEOFF',12:'AUTO_LAND',
+                             14:'AUTO_FOLLOW',17:'ORBIT',}
+                for i in range(len(timestamps)):
+                    m = int(nav_state[i])
+                    if m != prev_mode:
+                        self.data['MODE'].append({
+                            '_ts': float(timestamps[i]),
+                            'Mode': m,
+                            'ModeNum': m,
+                        })
+                        prev_mode = m
+
+        # ERR/EV — ULog logged messages
+        for msg in ulog.logged_messages:
+            ts = msg.timestamp / 1e6
+            self.data['MSG'].append({'_ts': ts, 'Message': msg.message})
 
     def _parse(self):
         """2-pass 파싱: 모든 메시지를 스캔하되, 분석용은 상세 저장"""
