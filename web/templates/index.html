@@ -251,6 +251,7 @@ border:1px solid transparent;transition:all .2s;white-space:nowrap;}
       <div class="tab" data-tab="findings">Findings</div>
       <div class="tab" data-tab="params">파라미터</div>
       <div class="tab" data-tab="correlate">상관 분석</div>
+      <div class="tab" data-tab="vehicle">기체 관리</div>
       <div class="tab" data-tab="trends">트렌드</div>
       <div class="tab" data-tab="compare">비행 비교</div>
     </div>
@@ -328,6 +329,16 @@ border:1px solid transparent;transition:all .2s;white-space:nowrap;}
     </div>
 
     <!-- 비행 비교 Tab -->
+    <!-- 기체 관리 Tab -->
+    <div class="tab-content" id="tab-vehicle">
+      <div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:16px;margin-bottom:12px;">
+        <p style="color:var(--dim);font-size:13px;margin-bottom:12px;">같은 SysID의 로그가 누적되면 기체별 정비 소요와 비행술 피드백을 제공합니다</p>
+        <button class="btn btn-primary" onclick="loadVehicles()" style="padding:8px 16px;font-size:12px;">내 기체 목록</button>
+      </div>
+      <div id="vehicleList"></div>
+      <div id="vehicleReport" style="margin-top:16px;"></div>
+    </div>
+
     <!-- 상관 분석 Tab -->
     <div class="tab-content" id="tab-correlate">
       <div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:16px;margin-bottom:12px;">
@@ -1287,6 +1298,207 @@ function renderCompare(logs){
       Plotly.newPlot(divId,traces,{...PLOT_LAYOUT,yaxis:{...PLOT_LAYOUT.yaxis,title:ylabel}},
         {responsive:true,scrollZoom:false,displayModeBar:!isMobile});
   });
+}
+
+// ── 기체 관리 ──
+async function loadVehicles(){
+  const uid=document.getElementById('userId').value.trim();
+  if(!uid){alert('사용자 ID를 입력하세요');return;}
+  const el=document.getElementById('vehicleList');
+  try{
+    const res=await fetch(`/api/vehicles/${encodeURIComponent(uid)}`);
+    const data=await res.json();
+    if(!data.vehicles||!data.vehicles.length){
+      el.innerHTML=`<div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:16px;color:var(--dim);">
+        등록된 기체가 없습니다. 로그를 업로드하면 SYSID_THISMAV 파라미터로 자동 등록됩니다.</div>`;
+      return;
+    }
+    let html=`<div style="display:flex;gap:12px;flex-wrap:wrap;">`;
+    data.vehicles.forEach(v=>{
+      const hrs=v.total_sec?((v.total_sec||0)/3600).toFixed(1):'0';
+      html+=`<div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:16px;min-width:220px;cursor:pointer;transition:border-color .2s;"
+        onclick="loadVehicleReport(${v.vehicle_id})" onmouseover="this.style.borderColor='var(--blue)'" onmouseout="this.style.borderColor='var(--border)'">
+        <div style="font-size:24px;font-weight:700;color:var(--blue);">SysID #${v.vehicle_id}</div>
+        <div style="margin-top:8px;font-size:12px;color:var(--dim);">
+          비행: ${v.flight_count}회 | ${hrs}시간<br>
+          평균 점수: ${Math.round(v.avg_score||0)}점<br>
+          최근: ${(v.last_flight||'').substring(0,16)}
+        </div>
+      </div>`;
+    });
+    html+=`</div>`;
+    el.innerHTML=html;
+  }catch(e){el.innerHTML=`<div style="color:var(--red);">${e.message}</div>`;}
+}
+
+async function loadVehicleReport(vid){
+  const uid=document.getElementById('userId').value.trim();
+  const el=document.getElementById('vehicleReport');
+  el.innerHTML='<div style="color:var(--dim);padding:12px;">로딩 중...</div>';
+  try{
+    const res=await fetch(`/api/vehicle/${encodeURIComponent(uid)}/${vid}`);
+    if(!res.ok){el.innerHTML='<div style="color:var(--red);">데이터 부족</div>';return;}
+    const r=await res.json();
+    let html='';
+
+    // ── 종합 등급 배너 ──
+    const gradeColor={'CRITICAL':'var(--red)','WARNING':'var(--orange)','GOOD':'var(--green)'}[r.overall_grade]||'var(--dim)';
+    const gradeBg={'CRITICAL':'#3a1a1a','WARNING':'#3a2a1a','GOOD':'#1a3a1a'}[r.overall_grade]||'var(--card)';
+    html+=`<div style="background:${gradeBg};border:2px solid ${gradeColor};border-radius:12px;padding:16px 20px;margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;">
+      <div>
+        <div style="font-size:13px;color:${gradeColor};font-weight:700;text-transform:uppercase;">${r.overall_grade}</div>
+        <div style="font-size:16px;font-weight:700;color:var(--text);margin-top:4px;">${r.overall_msg}</div>
+      </div>
+      <div style="font-size:36px;font-weight:900;color:${gradeColor};">${r.overall_grade==='GOOD'?'✓':r.overall_grade==='CRITICAL'?'✕':'⚠'}</div>
+    </div>`;
+
+    // ── 기체 요약 카드 ──
+    html+=`<div style="background:linear-gradient(135deg,#0d1b2a,#1b2838);border:1px solid var(--border);border-radius:12px;padding:20px;margin-bottom:16px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;">
+        <div>
+          <div style="font-size:22px;font-weight:700;color:var(--blue);">기체 #${r.vehicle_id} (SysID)</div>
+          <div style="color:var(--dim);font-size:12px;margin-top:4px;">${r.first_flight} ~ ${r.last_flight}</div>
+        </div>
+        <div style="text-align:right;">
+          <div style="font-size:28px;font-weight:700;color:${r.motor_life_pct>80?'var(--red)':r.motor_life_pct>50?'var(--orange)':'var(--green)'};">${r.motor_life_pct}%</div>
+          <div style="font-size:10px;color:var(--dim);">모터 수명 소진</div>
+        </div>
+      </div>
+      <div style="display:flex;gap:16px;margin-top:16px;flex-wrap:wrap;">
+        <div class="kpi"><div class="label">총 비행</div><div class="value">${r.total_flights}회</div></div>
+        <div class="kpi"><div class="label">누적 시간</div><div class="value">${r.total_hours}h</div></div>
+        <div class="kpi"><div class="label">총 거리</div><div class="value">${r.total_dist_km}km</div></div>
+        <div class="kpi"><div class="label">소비 전력</div><div class="value">${r.total_mah}mAh</div></div>
+        <div class="kpi"><div class="label">총 FAIL</div><div class="value" style="color:var(--red);">${r.total_fails}</div></div>
+        <div class="kpi"><div class="label">총 WARN</div><div class="value" style="color:var(--orange);">${r.total_warns}</div></div>
+      </div>
+    </div>`;
+
+    // ── 교차 분석 (기체 ↔ 조종 융합) ──
+    if(r.cross_analysis&&r.cross_analysis.length){
+      html+=`<div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:16px;margin-bottom:12px;">
+        <h3 style="font-size:15px;color:var(--purple);margin-bottom:12px;">🔗 기체 ↔ 조종 교차 분석</h3>`;
+      r.cross_analysis.forEach(c=>{
+        const sc={FAIL:'var(--red)',WARN:'var(--orange)',INFO:'var(--blue)',OK:'var(--green)'}[c.severity]||'var(--dim)';
+        const sk={FAIL:'위험',WARN:'경고',INFO:'참고',OK:'정상'}[c.severity]||'';
+        const tc={CORRELATION:'🔄',CAUSAL:'⚡',IMPACT:'💥',TREND:'📉',CRITICAL:'🚨',INFO:'ℹ️'}[c.type]||'📊';
+        html+=`<div style="padding:10px;border-bottom:1px solid var(--border);display:flex;gap:10px;align-items:flex-start;">
+          <div style="flex-shrink:0;width:32px;text-align:center;">
+            <span style="font-size:18px;">${tc}</span><br>
+            <span style="padding:1px 6px;border-radius:3px;background:${sc};color:white;font-size:9px;font-weight:700;">${sk}</span>
+          </div>
+          <div>
+            <div style="font-weight:700;font-size:13px;color:var(--text);">${c.title}</div>
+            <div style="font-size:12px;color:var(--dim);margin-top:4px;line-height:1.6;">${c.detail}</div>
+          </div>
+        </div>`;
+      });
+      html+=`</div>`;
+    }
+
+    // ── 정비 소요 ──
+    if(r.maintenance&&r.maintenance.length){
+      html+=`<div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:16px;margin-bottom:12px;">
+        <h3 style="font-size:15px;color:var(--red);margin-bottom:12px;">🔧 정비 소요 (${r.maintenance.length}건)</h3>`;
+      r.maintenance.forEach(m=>{
+        const uc={HIGH:'var(--red)',MEDIUM:'var(--orange)',LOW:'var(--green)'}[m.urgency]||'var(--dim)';
+        const uk={HIGH:'긴급',MEDIUM:'주의',LOW:'참고'}[m.urgency]||'';
+        html+=`<div style="padding:10px;border-bottom:1px solid var(--border);display:flex;gap:10px;align-items:flex-start;">
+          <span style="padding:2px 8px;border-radius:4px;background:${uc};color:white;font-size:10px;font-weight:700;flex-shrink:0;">${uk}</span>
+          <div>
+            <div style="font-weight:600;font-size:13px;">${m.part}</div>
+            <div style="font-size:12px;color:var(--dim);margin-top:2px;">${m.detail}</div>
+            <div style="font-size:12px;color:var(--cyan);margin-top:2px;">${m.action}</div>
+          </div>
+        </div>`;
+      });
+      html+=`</div>`;
+    }else{
+      html+=`<div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:16px;margin-bottom:12px;">
+        <h3 style="color:var(--green);font-size:14px;">✅ 정비 소요 없음 — 기체 상태 양호</h3></div>`;
+    }
+
+    // ── 비행술 지도 ──
+    if(r.pilot_feedback&&r.pilot_feedback.length){
+      html+=`<div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:16px;margin-bottom:12px;">
+        <h3 style="font-size:15px;color:var(--blue);margin-bottom:12px;">🎓 비행술 지도</h3>`;
+      r.pilot_feedback.forEach(f=>{
+        const gc={GOOD:'var(--green)',IMPROVING:'var(--cyan)',MODERATE:'var(--orange)',
+                  NEEDS_WORK:'var(--red)',CAUTION:'var(--yellow)',DECLINING:'var(--red)'}[f.grade]||'var(--dim)';
+        const gk={GOOD:'양호',IMPROVING:'향상중',MODERATE:'보통',
+                  NEEDS_WORK:'개선필요',CAUTION:'주의',DECLINING:'하락'}[f.grade]||'';
+        html+=`<div style="padding:10px;border-bottom:1px solid var(--border);">
+          <div style="display:flex;justify-content:space-between;align-items:center;">
+            <span style="font-weight:600;font-size:13px;">${f.category}</span>
+            <span style="padding:2px 8px;border-radius:4px;border:1px solid ${gc};color:${gc};font-size:10px;font-weight:700;">${gk}</span>
+          </div>
+          <div style="font-size:12px;color:var(--dim);margin-top:4px;">${f.detail}</div>
+          <div style="font-size:12px;color:var(--cyan);margin-top:2px;">💡 ${f.advice}</div>
+        </div>`;
+      });
+      html+=`</div>`;
+    }
+
+    // ── 비행 이력 타임라인 (특이점 하이라이트) ──
+    if(r.flight_history&&r.flight_history.length){
+      const hasIssues=r.flight_history.some(f=>f.issues&&f.issues.length>0);
+      html+=`<div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:16px;margin-bottom:12px;">
+        <h3 style="font-size:15px;color:var(--cyan);margin-bottom:12px;">📋 비행 이력 (${r.flight_history.length}회)</h3>
+        <div style="overflow-x:auto;">
+        <table style="width:100%;border-collapse:collapse;font-size:11px;">
+          <tr style="border-bottom:2px solid var(--border);">
+            <th style="text-align:left;padding:6px 4px;color:var(--dim);">날짜</th>
+            <th style="text-align:left;padding:6px 4px;color:var(--dim);">파일</th>
+            <th style="text-align:center;padding:6px 4px;color:var(--dim);">시간</th>
+            <th style="text-align:center;padding:6px 4px;color:var(--dim);">점수</th>
+            <th style="text-align:center;padding:6px 4px;color:var(--dim);">판정</th>
+            <th style="text-align:left;padding:6px 4px;color:var(--dim);">특이점</th>
+            <th style="text-align:center;padding:6px 4px;color:var(--dim);">보기</th>
+          </tr>`;
+      r.flight_history.forEach(f=>{
+        const oc={FAIL:'var(--red)',WARN:'var(--orange)',OK:'var(--green)'}[f.overall]||'var(--dim)';
+        const issueHtml=f.issues&&f.issues.length?f.issues.map(i=>`<span style="display:inline-block;padding:1px 6px;border-radius:3px;background:#2a1a1a;border:1px solid var(--red);color:var(--orange);font-size:10px;margin:1px 2px;">${i}</span>`).join(''):'<span style="color:var(--dim);">—</span>';
+        const rowBg=f.issues&&f.issues.length?'rgba(239,83,80,0.05)':'transparent';
+        html+=`<tr style="border-bottom:1px solid var(--border);background:${rowBg};">
+          <td style="padding:6px 4px;white-space:nowrap;">${(f.date||'').substring(0,16)}</td>
+          <td style="padding:6px 4px;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${f.filename}">${f.filename}</td>
+          <td style="padding:6px 4px;text-align:center;">${f.duration||'-'}</td>
+          <td style="padding:6px 4px;text-align:center;font-weight:700;color:${f.score>=70?'var(--green)':f.score>=40?'var(--orange)':'var(--red)'};">${f.score||0}</td>
+          <td style="padding:6px 4px;text-align:center;"><span style="padding:1px 6px;border-radius:3px;background:${oc};color:white;font-size:10px;font-weight:700;">${f.overall}</span></td>
+          <td style="padding:6px 4px;">${issueHtml}</td>
+          <td style="padding:6px 4px;text-align:center;">${f.job_id?`<button onclick="loadPastResult('${f.job_id}')" style="padding:2px 8px;border-radius:4px;border:1px solid var(--blue);background:transparent;color:var(--blue);cursor:pointer;font-size:10px;">보기</button>`:'-'}</td>
+        </tr>`;
+      });
+      html+=`</table></div></div>`;
+    }
+
+    // ── 점수 추이 차트 ──
+    if(r.score_trend&&r.score_trend.length>1){
+      html+=`<div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:16px;">
+        <h3 style="font-size:14px;color:var(--blue);margin-bottom:8px;">비행 품질 추이</h3>
+        <div id="vehicleTrendChart"></div></div>`;
+    }
+
+    el.innerHTML=html;
+
+    // 차트 렌더
+    if(r.score_trend&&r.score_trend.length>1){
+      const labels=r.score_trend.map((_,i)=>`#${i+1}`);
+      const traces=[{x:labels,y:r.score_trend,type:'scatter',mode:'lines+markers',name:'점수',
+        line:{color:'#4fc3f7',width:2},marker:{size:6}}];
+      if(r.vibe_trend&&r.vibe_trend.length>1)
+        traces.push({x:r.vibe_trend.map((_,i)=>`#${i+1}`),y:r.vibe_trend,type:'scatter',mode:'lines+markers',
+          name:'진동',yaxis:'y2',line:{color:'#ff9800',width:1},marker:{size:4}});
+      if(r.motor_diff_trend&&r.motor_diff_trend.length>1)
+        traces.push({x:r.motor_diff_trend.map((_,i)=>`#${i+1}`),y:r.motor_diff_trend,type:'scatter',mode:'lines+markers',
+          name:'모터 불균형',yaxis:'y2',line:{color:'#ef5350',width:1,dash:'dot'},marker:{size:4}});
+      Plotly.newPlot('vehicleTrendChart',traces,{...PLOT_LAYOUT,height:280,
+        yaxis:{...PLOT_LAYOUT.yaxis,title:'점수',range:[0,100]},
+        yaxis2:{overlaying:'y',side:'right',title:'진동 / 모터차이',gridcolor:'transparent'},
+        legend:{x:0,y:1.15,orientation:'h',font:{size:10,color:'#8899aa'}},
+      },{responsive:true,displayModeBar:false});
+    }
+  }catch(e){el.innerHTML=`<div style="color:var(--red);">${e.message}</div>`;}
 }
 
 // ── 과거 분석 결과 다시 보기 ──

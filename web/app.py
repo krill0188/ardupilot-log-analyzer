@@ -14,7 +14,7 @@ from fastapi.staticfiles import StaticFiles
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from analyze import LogParser, Analyzer, ChartGen
 from ardupilot_error_codes import lookup_event
-from db import save_log, get_user_logs, get_log_by_job, get_all_users
+from db import save_log, get_user_logs, get_log_by_job, get_all_users, get_vehicle_report, get_user_vehicles
 
 app = FastAPI(title="Flight Log Analyzer — ArduPilot & PX4")
 
@@ -424,6 +424,79 @@ async def analyze_log(file: UploadFile = File(...), user_id: str = Form("anonymo
         "user_id": user_id,
     })
 
+    # SysID 추출
+    vehicle_id = 0
+    parms = parser.get('PARM')
+    for p in parms:
+        if p.get('Name') == 'SYSID_THISMAV':
+            vehicle_id = int(p.get('Value', 0))
+            break
+
+    # 기체 건강 지표 수집
+    health_data = {
+        'vibe_avg': None, 'motor_diff': None, 'motor_sat_pct': None,
+        'compass_r': getattr(analyzer, 'compass_interference', None),
+        'baro_drift': getattr(analyzer, 'baro_drift', {}).get('total_m') if getattr(analyzer, 'baro_drift', None) else None,
+        'alt_rms': getattr(analyzer, 'alt_tracking', {}).get('rms') if getattr(analyzer, 'alt_tracking', None) else None,
+        'fs_count': len(getattr(analyzer, 'failsafe_events', []) or []),
+        'mah_used': float(s.get('mah', 0)),
+    }
+    # 진동 평균
+    vibes_data = parser.get('VIBE')
+    if vibes_data:
+        import numpy as _np
+        worst = [max(v.get('VibeX',0), v.get('VibeY',0), v.get('VibeZ',0)) for v in vibes_data]
+        health_data['vibe_avg'] = round(float(_np.mean(worst)), 2)
+    # 모터 불균형
+    rcou_data = parser.get('RCOU')
+    if rcou_data and len(rcou_data) > 50:
+        import numpy as _np
+        mavg = {}
+        for i in range(1,5):
+            vals = [r.get(f'C{i}',0) for r in rcou_data if r.get(f'C{i}',0)>900]
+            if vals: mavg[i] = _np.mean(vals)
+        if len(mavg) >= 4:
+            health_data['motor_diff'] = round(float(max(mavg.values()) - min(mavg.values())), 1)
+    # 모터 포화율
+    ms = getattr(analyzer, 'motor_saturation', None)
+    if ms:
+        health_data['motor_sat_pct'] = ms.get('pct', 0)
+
+    # 비행술 지표 수집
+    pilot_data = {
+        'hard_landing_count': 0, 'bounce_count': 0, 'rapid_maneuver_count': 0,
+        'hover_cep95': None, 'landing_speed': None, 'batt_end_pct': None,
+    }
+    # 착륙 데이터
+    ld = getattr(analyzer, 'landing_data', None)
+    if ld:
+        pilot_data['landing_speed'] = ld.get('max_descent', 0)
+        pilot_data['bounce_count'] = ld.get('bounce_count', 0)
+        if ld.get('max_descent', 0) > 2.0:
+            pilot_data['hard_landing_count'] = 1
+    # 급기동 감지 (ATT Roll/Pitch 변화 30도 이상)
+    att = parser.get('ATT')
+    if att and len(att) > 50:
+        import numpy as _np
+        rolls = _np.array([a.get('Roll',0) for a in att])
+        pitchs = _np.array([a.get('Pitch',0) for a in att])
+        rapid = 0
+        step = max(1, len(rolls) // 2000)
+        for i in range(10, len(rolls), step):
+            if abs(rolls[i]-rolls[i-10]) > 25 or abs(pitchs[i]-pitchs[i-10]) > 25:
+                rapid += 1
+        pilot_data['rapid_maneuver_count'] = rapid
+    # 호버 CEP
+    hd = getattr(analyzer, 'hover_data', None)
+    if hd and len(hd) > 0:
+        pilot_data['hover_cep95'] = max(h.get('cep95_m', 0) for h in hd)
+    # 배터리 잔량
+    batt_data = parser.get('BAT') or parser.get('BATT') or parser.get('CURR')
+    if batt_data:
+        rem_pcts = [b.get('RemPct', 0) for b in batt_data if b.get('RemPct', 0) > 0]
+        if rem_pcts:
+            pilot_data['batt_end_pct'] = float(rem_pcts[-1])
+
     # DB 저장 (return 전에 실행)
     try:
         counts_dict = {
@@ -437,12 +510,16 @@ async def analyze_log(file: UploadFile = File(...), user_id: str = Form("anonymo
         save_log(
             job_id=job_id, user_id=user_id,
             filename=s['filename'], filesize_mb=s['filesize_mb'],
-            summary={"duration": s['dur_str'], "max_alt": round(s['max_alt'],1),
+            vehicle_id=vehicle_id,
+            summary={"duration": s['dur_str'], "dur_sec": s.get('dur_sec', 0),
+                     "max_alt": round(s['max_alt'],1),
                      "max_spd": round(s['max_spd'],1), "dist_m": round(s['dist_m'],0),
                      "v_min": round(s['v_min'],2), "v_max": round(s['v_max'],2)},
             counts=counts_dict, scores=scores,
             root_cause_text=rc_text,
             story_text=analyzer.flight_story[:500] if analyzer.flight_story else '',
+            health_data=health_data,
+            pilot_data=pilot_data,
         )
     except Exception as e:
         print(f"[DB SAVE WARN] {e}")
@@ -480,6 +557,22 @@ async def user_logs(user_id: str):
     """사용자 로그 이력 조회"""
     logs = get_user_logs(user_id)
     return {"user_id": user_id, "count": len(logs), "logs": logs}
+
+
+@app.get("/api/vehicles/{user_id}")
+async def user_vehicles(user_id: str):
+    """사용자의 기체 목록"""
+    vehicles = get_user_vehicles(user_id)
+    return _json_safe({"user_id": user_id, "vehicles": vehicles})
+
+
+@app.get("/api/vehicle/{user_id}/{vehicle_id}")
+async def vehicle_report(user_id: str, vehicle_id: int):
+    """기체별 종합 리포트 — 정비 소요 + 비행술 지도"""
+    report = get_vehicle_report(user_id, vehicle_id)
+    if not report:
+        return JSONResponse({"error": "해당 기체 데이터 없음"}, status_code=404)
+    return _json_safe(report)
 
 
 @app.get("/api/csv/{job_id}")
