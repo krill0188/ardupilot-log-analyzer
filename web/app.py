@@ -374,7 +374,7 @@ async def analyze_log(file: UploadFile = File(...), user_id: str = Form("anonymo
     # 종합
     scores['overall'] = sum(scores.values()) // len(scores)
 
-    return _json_safe({
+    response = _json_safe({
         "job_id": job_id,
         "summary": {
             "filename": s['filename'],
@@ -424,7 +424,7 @@ async def analyze_log(file: UploadFile = File(...), user_id: str = Form("anonymo
         "user_id": user_id,
     })
 
-    # DB 저장
+    # DB 저장 (return 전에 실행)
     try:
         counts_dict = {
             "fail": sum(1 for f in findings if f['sev'] == 'FAIL'),
@@ -446,6 +446,8 @@ async def analyze_log(file: UploadFile = File(...), user_id: str = Form("anonymo
         )
     except Exception as e:
         print(f"[DB SAVE WARN] {e}")
+
+    return response
 
 
 @app.get("/api/logs/{user_id}")
