@@ -447,7 +447,32 @@ async def analyze_log(file: UploadFile = File(...), user_id: str = Form("anonymo
     except Exception as e:
         print(f"[DB SAVE WARN] {e}")
 
+    # 분석 결과 JSON 저장 (나중에 다시 로드용)
+    try:
+        result_path = job_dir / "result.json"
+        with open(result_path, 'w', encoding='utf-8') as f:
+            json.dump(response, f, ensure_ascii=False)
+    except Exception as e:
+        print(f"[JSON SAVE WARN] {e}")
+
     return response
+
+
+@app.get("/api/result/{job_id}")
+async def load_result(job_id: str):
+    """저장된 분석 결과 다시 로드"""
+    job_dir = UPLOAD_DIR / job_id
+    result_path = job_dir / "result.json"
+    if result_path.exists():
+        with open(result_path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    # result.json 없으면 재분석
+    bins = list(job_dir.glob("*.bin")) + list(job_dir.glob("*.BIN")) + \
+           list(job_dir.glob("*.tlog")) + list(job_dir.glob("*.ulg"))
+    if not bins:
+        return JSONResponse({"error": "분석 결과를 찾을 수 없습니다"}, status_code=404)
+    # 재분석은 시간이 걸리므로 안내만
+    return JSONResponse({"error": "저장된 결과 없음. 파일을 다시 업로드하세요."}, status_code=404)
 
 
 @app.get("/api/logs/{user_id}")
