@@ -166,10 +166,23 @@ border:1px solid transparent;transition:all .2s;white-space:nowrap;}
 <body>
 
 <div class="header">
-  <div style="font-size:28px;">&#9992;</div>
+  <!-- SVG Logo -->
+  <svg width="48" height="48" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg" style="flex-shrink:0;">
+    <rect width="48" height="48" rx="10" fill="#0f3460"/>
+    <path d="M12 32 L24 12 L36 32 Z" fill="none" stroke="#4fc3f7" stroke-width="2.5" stroke-linejoin="round"/>
+    <circle cx="24" cy="24" r="3" fill="#4fc3f7"/>
+    <line x1="24" y1="21" x2="24" y2="14" stroke="#66bb6a" stroke-width="1.5"/>
+    <line x1="21" y1="28" x2="15" y2="31" stroke="#ff9800" stroke-width="1.5"/>
+    <line x1="27" y1="28" x2="33" y2="31" stroke="#ff9800" stroke-width="1.5"/>
+    <path d="M8 36 C14 33, 20 38, 26 34 C32 30, 38 35, 42 33" stroke="#4fc3f7" stroke-width="1.5" opacity="0.4" fill="none"/>
+    <path d="M8 39 C14 36, 20 41, 26 37 C32 33, 38 38, 42 36" stroke="#66bb6a" stroke-width="1" opacity="0.3" fill="none"/>
+  </svg>
   <div style="flex:1;">
-    <h1>Flight Log Analyzer</h1>
-    <div class="sub">ArduPilot &amp; PX4 — .bin / .tlog / .ulg &mdash; Made by Kim</div>
+    <h1 style="display:flex;align-items:center;gap:8px;">
+      Flight Log Analyzer
+      <span style="font-size:11px;padding:2px 8px;border-radius:4px;background:rgba(79,195,247,0.15);color:var(--blue);font-weight:400;vertical-align:middle;">v4.1</span>
+    </h1>
+    <div class="sub">ArduPilot &amp; PX4 &mdash; .bin / .tlog / .ulg &mdash; 31+ Auto Checks &mdash; Made by Kim</div>
   </div>
   <button onclick="toggleTheme()" class="btn btn-outline" style="padding:6px 12px;font-size:12px;" id="themeBtn">&#9728; Light</button>
 </div>
