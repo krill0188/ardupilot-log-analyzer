@@ -548,14 +548,13 @@ function render(d){
   renderExtraInfo(d);
   if(d.timeseries.pid_roll) plotPid(d, 'pid_roll', 'chartPidRoll', 'Roll');
   if(d.timeseries.pid_pitch) plotPid(d, 'pid_pitch', 'chartPidPitch', 'Pitch');
-  if(d.timeseries.gps) plotGps(d);
-  if(d.timeseries.gps) plotSatMap(d);
+  try{if(d.timeseries.gps) plotGps(d);}catch(e){console.warn('plotGps:',e);}
 
   // New charts
-  if(d.timeseries.esc_0||d.timeseries.esc_1){document.getElementById('secEsc').style.display='';plotEscChart(d);}
-  if(d.hover){document.getElementById('secHover').style.display='';plotHoverChart(d);}
-  if(d.flight_phases&&d.flight_phases.length){document.getElementById('secPhases').style.display='';plotPhasesChart(d);}
-  if(d.landing){document.getElementById('secLanding').style.display='';plotLandingChart(d);}
+  try{if(d.timeseries.esc_0||d.timeseries.esc_1){document.getElementById('secEsc').style.display='';plotEscChart(d);}}catch(e){console.warn('esc:',e);}
+  try{if(d.hover){document.getElementById('secHover').style.display='';plotHoverChart(d);}}catch(e){console.warn('hover:',e);}
+  try{if(d.flight_phases&&d.flight_phases.length){document.getElementById('secPhases').style.display='';plotPhasesChart(d);}}catch(e){console.warn('phases:',e);}
+  try{if(d.landing){document.getElementById('secLanding').style.display='';plotLandingChart(d);}}catch(e){console.warn('landing:',e);}
 
   // Findings
   renderFindings(d.findings);
@@ -565,6 +564,20 @@ function render(d){
   if(d.root_cause) renderRootCause(d.root_cause);
   if(d.timeline) renderTimeline(d.timeline);
   if(d.param_check) renderParams(d.param_check);
+
+  // 위성 지도 — 탭 전환 시 렌더 (display:none 상태에서는 Leaflet이 동작 안 함)
+  if(d.timeseries.gps && d.timeseries.gps.lat.length>=3){
+    document.getElementById('secSatMap').style.display='';
+    // Charts 탭 클릭 시 지도 렌더
+    const satMapReady=()=>{
+      if(!satMapInstance){try{plotSatMap(d);}catch(e){console.warn('satMap:',e);}}
+    };
+    // 즉시 시도 + 탭 전환 시 재시도
+    setTimeout(satMapReady, 500);
+    document.querySelectorAll('.tab').forEach(tab=>{
+      tab.addEventListener('click',()=>{if(tab.dataset.tab==='charts')setTimeout(satMapReady,200);});
+    });
+  }
 }
 
 function modeShapes(modes,maxT){
@@ -714,7 +727,9 @@ function plotSatMap(d){
   }
 
   map.fitBounds(path.getBounds(),{padding:[30,30]});
-  setTimeout(()=>map.invalidateSize(),200);
+  // Leaflet은 container 사이즈 변경 후 invalidateSize 필요
+  setTimeout(()=>{map.invalidateSize();map.fitBounds(path.getBounds(),{padding:[30,30]});},300);
+  setTimeout(()=>{map.invalidateSize();},1000);
 }
 
 // ── 인터랙티브 상관 분석 ──
