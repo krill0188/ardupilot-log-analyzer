@@ -1,6 +1,6 @@
-# ArduCopter Flight Log Analyzer
+# Flight Log Analyzer — ArduPilot & PX4
 
-ArduCopter .bin 로그 파일을 업로드하면 **종합 분석 보고서**를 자동 생성합니다.
+ArduPilot (.bin/.tlog) 및 PX4 (.ulg) 비행 로그를 업로드하면 **종합 분석 보고서**를 자동 생성합니다.
 단순 수치 나열이 아닌, **근본 원인 분석**과 **비행 복기**까지 제공합니다.
 
 ## 주요 기능

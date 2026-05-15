@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-ArduCopter .bin Log Analyzer v3 — UAV Log Viewer 스타일 PDF 보고서
+Flight Log Analyzer v3 — ArduPilot & PX4 (.bin / .tlog / .ulg)
 Made by Kim.
 
 사용법:
@@ -2781,7 +2781,7 @@ class ReportBuilder:
         canvas.line(18*mm, A4[1]-14*mm, A4[0]-18*mm, A4[1]-14*mm)
         canvas.setFont(FONT_NAME, 7.5)
         canvas.setFillColor(HexColor(C_TEXT_DIM))
-        canvas.drawString(18*mm, A4[1]-12*mm, 'ArduCopter Flight Log Analysis')
+        canvas.drawString(18*mm, A4[1]-12*mm, 'Flight Log Analysis — ArduPilot & PX4')
         canvas.drawRightString(A4[0]-18*mm, A4[1]-12*mm, datetime.now().strftime('%Y-%m-%d'))
         canvas.setFont(FONT_NAME, 7.5)
         canvas.drawCentredString(A4[0]/2, 9*mm, 'Made by Kim.')
@@ -2797,7 +2797,7 @@ class ReportBuilder:
 
         # ══ 페이지 1: 대시보드 ══
         story.append(Spacer(1, 6*mm))
-        story.append(Paragraph('ArduCopter 비행 로그 분석', self.styles['Title2']))
+        story.append(Paragraph('비행 로그 분석 — ArduPilot & PX4', self.styles['Title2']))
 
         # 종합 판정
         fails = sum(1 for f in self.a.findings if f.sev=='FAIL')
@@ -3024,7 +3024,7 @@ class ReportBuilder:
 # 5. 메인
 # ═══════════════════════════════════════════
 def main():
-    ap = argparse.ArgumentParser(description='ArduCopter .bin → PDF')
+    ap = argparse.ArgumentParser(description='Flight Log Analyzer — .bin/.tlog/.ulg → PDF')
     ap.add_argument('logfile', help='.bin 파일')
     ap.add_argument('-o', '--output', help='출력 PDF 경로')
     args = ap.parse_args()

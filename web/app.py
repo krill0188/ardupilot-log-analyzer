@@ -16,7 +16,7 @@ from analyze import LogParser, Analyzer, ChartGen
 from ardupilot_error_codes import lookup_event
 from db import save_log, get_user_logs, get_log_by_job, get_all_users
 
-app = FastAPI(title="ArduCopter Log Analyzer")
+app = FastAPI(title="Flight Log Analyzer — ArduPilot & PX4")
 
 import numpy as np
 
