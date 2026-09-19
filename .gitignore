@@ -35,3 +35,8 @@ venv/
 # OS
 .DS_Store
 Thumbs.db
+
+# 생성물·DB
+log-analyzer-portable.zip
+portable/
+web/flight_logs.db

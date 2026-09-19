@@ -316,6 +316,8 @@ class LogParser:
             'ESC','MOTB','POWR','MAG','MAG2',
             'NKF2','XKF2','PIDR','PIDP','PIDY',
             'BARO','RSSI',
+            'ISBH','ISBD',  # Batch IMU (고주파 진동 분석용)
+            'FTN1','FTN2','FTNS',  # In-Flight FFT 결과
         }
         for t in analysis_types:
             self.data[t] = []
@@ -363,7 +365,8 @@ class LogParser:
             '미션/모드': ['CMD','MODE','MSG','PARM'],
             '에러/이벤트': ['ERR','EV'],
             '시스템': ['PM','FMT','UNIT','MULT','FMTU','PARM'],
-            'FFT/필터': ['FTN','FTNS','FFT','FFTD'],
+            'FFT/필터': ['FTN','FTN1','FTN2','FTNS','FFT','FFTD'],
+            'Batch IMU': ['ISBH','ISBD'],
             '텔레메트리': ['RSSI','RAD','WENC'],
             '카메라/기타': ['CAM','TRIG','TERRAIN','FLOW','OF','RALLY','FENCE'],
         }
@@ -410,6 +413,8 @@ class LogParser:
             ('고도 추적(Des/Act)', ['CTUN']),
             ('페일세이프 재구성', ['ERR', 'MSG']),
             ('FFT 진동 주파수', ['IMU']),
+            ('고주파 FFT (Batch IMU)', ['ISBH', 'ISBD']),
+            ('In-Flight FFT', ['FTN1', 'FTN2']),
             ('이벤트 타임라인', ['ERR', 'EV', 'MODE', 'MSG']),
             ('근본 원인 분석', ['ERR']),
             ('비행 복기', ['GPS', 'MODE']),
@@ -1708,7 +1713,196 @@ class Analyzer:
 
     # ── Feature 16: FFT 진동 주파수 분석 ──
     def _ck_fft(self):
-        """IMU 가속도계 FFT — 공진 주파수 + 노치필터 제안"""
+        """IMU FFT — 일반 + Batch IMU 고주파 + In-Flight FFT"""
+        self.fft_peaks = {}
+        self.fft_fs = 0
+        self.fft_results = {}  # 차트용 전체 스펙트럼 데이터
+        self.batch_fft_results = {}  # Batch IMU 고주파 FFT
+        self.inflight_fft = []  # FTN1/FTN2 데이터
+
+        # ── (A) Batch IMU (ISBH/ISBD) 고주파 FFT ──
+        batch_done = self._ck_fft_batch()
+
+        # ── (B) In-Flight FFT (FTN1/FTN2) ──
+        self._ck_fft_inflight()
+
+        # ── (C) 일반 IMU FFT (폴백 — ISBH 없을 때) ──
+        if not batch_done:
+            self._ck_fft_imu()
+
+    def _ck_fft_batch(self) -> bool:
+        """Batch IMU 로그(ISBH/ISBD) → 고주파 FFT 분석 (1kHz+)"""
+        isbh = self.p.get('ISBH')
+        isbd = self.p.get('ISBD')
+        if not isbh or not isbd:
+            return False
+
+        from scipy.signal import welch
+        from scipy.signal import find_peaks
+
+        # ISBH에서 배치 세션별로 그룹핑
+        # ISBH 필드: N(샘플수), type(0=Gyro,1=Accel), instance, mul, smp_rate, SampleUS, smp_cnt
+        # ISBD 필드: N(seq번호), isb_N(배치번호), x, y, z
+        batches = {}
+        for h in isbh:
+            batch_n = h.get('N', h.get('SeqNo', 0))
+            batches[batch_n] = {
+                'sample_rate': h.get('smp_rate', h.get('SmpRate', 1000)),
+                'sample_count': h.get('smp_cnt', h.get('SmpCnt', 1024)),
+                'sensor_type': h.get('type', h.get('IMUType', 0)),  # 0=Gyro, 1=Accel
+                'instance': h.get('instance', h.get('IMUInst', 0)),
+                'mul': h.get('mul', h.get('Mul', 1.0)),
+                'data_x': [], 'data_y': [], 'data_z': [],
+            }
+
+        # ISBD 데이터를 배치에 매핑
+        for d in isbd:
+            bn = d.get('N', d.get('isb_N', 0))
+            if bn in batches:
+                b = batches[bn]
+                mul = b['mul'] if b['mul'] != 0 else 1.0
+                # ISBD의 x,y,z는 배열이 아닌 개별 샘플일 수 있음
+                for ax in ('x', 'y', 'z'):
+                    val = d.get(ax, 0)
+                    if isinstance(val, (list, np.ndarray)):
+                        b[f'data_{ax}'].extend([v * mul for v in val])
+                    else:
+                        b[f'data_{ax}'].append(float(val) * mul)
+
+        # 유효 배치 필터링 (최소 256 샘플)
+        valid_batches = {k: v for k, v in batches.items()
+                        if len(v['data_x']) >= 256}
+
+        if not valid_batches:
+            return False
+
+        # 가장 긴 배치를 사용
+        best = max(valid_batches.values(), key=lambda v: len(v['data_x']))
+        fs = best['sample_rate']
+        sensor_label = '자이로' if best['sensor_type'] == 0 else '가속도계'
+        n_samples = len(best['data_x'])
+
+        fft_results = {}
+        for ax_key, ax_name in [('data_x', 'X'), ('data_y', 'Y'), ('data_z', 'Z')]:
+            vals = np.array(best[ax_key])
+            if len(vals) < 256:
+                continue
+
+            # Welch PSD — 더 안정적인 스펙트럼
+            nperseg = min(1024, len(vals))
+            freqs, psd = welch(vals - np.mean(vals), fs=fs, nperseg=nperseg,
+                              window='hann', noverlap=nperseg//2)
+
+            # 1Hz 이상만
+            mask = freqs >= 1.0
+            fft_results[ax_name] = {
+                'freqs': freqs[mask],
+                'magnitude': np.sqrt(psd[mask]),  # PSD → amplitude
+            }
+
+        if not fft_results:
+            return False
+
+        self.batch_fft_results = fft_results
+        self.fft_fs = round(fs, 1)
+        self.fft_batch_sensor = sensor_label
+        self.fft_batch_samples = n_samples
+
+        # 피크 검출
+        peaks = {}
+        for ax, data in fft_results.items():
+            mag = data['magnitude']
+            freq = data['freqs']
+            if len(mag) < 10:
+                continue
+            # scipy 피크 검출 — prominence 기반
+            try:
+                peak_idx, props = find_peaks(mag, prominence=np.max(mag)*0.1, distance=5)
+                if len(peak_idx) == 0:
+                    peak_idx = np.argsort(mag)[-3:][::-1]
+                else:
+                    # 크기순 상위 5개
+                    sorted_idx = peak_idx[np.argsort(mag[peak_idx])[::-1]][:5]
+                    peak_idx = sorted_idx
+            except Exception:
+                peak_idx = np.argsort(mag)[-3:][::-1]
+            peaks[ax] = [(round(float(freq[i]), 1), round(float(mag[i]), 4))
+                         for i in peak_idx[:5]]
+
+        self.fft_peaks = peaks
+
+        # 진단 결과
+        all_peaks = []
+        for ax, pk_list in peaks.items():
+            if pk_list:
+                all_peaks.append((ax, pk_list[0][0], pk_list[0][1]))
+
+        if not all_peaks:
+            return True
+
+        dominant = max(all_peaks, key=lambda x: x[2])
+        dom_freq = dominant[1]
+
+        detail = f'[Batch IMU 고주파 분석]\n'
+        detail += f'센서: {sensor_label} (IMU#{best["instance"]})\n'
+        detail += f'샘플링: {fs:.0f}Hz, {n_samples}샘플 (나이퀴스트: {fs/2:.0f}Hz)\n\n'
+        for ax, pk_list in peaks.items():
+            detail += f'  {ax}축 피크: ' + ', '.join(f'{f:.0f}Hz({m:.3f})' for f, m in pk_list) + '\n'
+
+        # 노치필터 제안
+        notch_suggestion = self._suggest_notch_filter(dom_freq, peaks)
+
+        if dom_freq > 30:
+            self._add('WARN', f'고주파 진동 피크 {dom_freq:.0f}Hz ({dominant[0]}축)',
+                      detail, notch_suggestion)
+        else:
+            self._add('OK', f'Batch FFT 피크 {dom_freq:.0f}Hz ({dominant[0]}축)', detail)
+
+        return True
+
+    def _ck_fft_inflight(self):
+        """In-Flight FFT (FTN1/FTN2) — FC가 비행 중 감지한 진동 주파수"""
+        ftn1 = self.p.get('FTN1')
+        ftn2 = self.p.get('FTN2')
+        ftn = ftn1 or ftn2
+        if not ftn or len(ftn) < 5:
+            return
+
+        # FTN1 필드: PkAvg(평균피크Hz), BwAvg(대역폭), SnrAvg(SNR)
+        freqs = []
+        for f in ftn:
+            pk = f.get('PkAvg', f.get('PkAvg1', 0))
+            if pk and pk > 5:
+                freqs.append({
+                    'ts': f.get('_ts', 0),
+                    'peak_hz': float(pk),
+                    'bw': float(f.get('BwAvg', f.get('BwAvg1', 0))),
+                    'snr': float(f.get('SnrAvg', f.get('SnR', 0))),
+                })
+
+        if not freqs:
+            return
+
+        self.inflight_fft = freqs
+
+        avg_freq = np.mean([f['peak_hz'] for f in freqs])
+        min_freq = min(f['peak_hz'] for f in freqs)
+        max_freq = max(f['peak_hz'] for f in freqs)
+
+        detail = f'[In-Flight FFT — FC 실시간 감지]\n'
+        detail += f'감지 샘플: {len(freqs)}건\n'
+        detail += f'평균 피크: {avg_freq:.1f}Hz\n'
+        detail += f'범위: {min_freq:.1f} ~ {max_freq:.1f}Hz\n'
+
+        if avg_freq > 50:
+            self._add('INFO', f'In-Flight FFT 감지: {avg_freq:.0f}Hz (평균)',
+                      detail,
+                      f'INS_HNTC2_MODE=4 설정 시 FC가 실시간 자동 추적')
+        else:
+            self._add('OK', f'In-Flight FFT: {avg_freq:.0f}Hz (양호)', detail)
+
+    def _ck_fft_imu(self):
+        """일반 IMU 로그 FFT (폴백 — Batch IMU 없을 때)"""
         imu = self.p.get('IMU')
         if not imu or len(imu) < 256:
             return
@@ -1722,7 +1916,6 @@ class Analyzer:
         dt_avg = float(np.median(dt_arr))
         fs = 1.0 / dt_avg if dt_avg > 0 else 100
 
-        # 최대 4096 샘플 사용
         n_samples = min(len(imu), 4096)
         fft_results = {}
 
@@ -1730,15 +1923,11 @@ class Analyzer:
             vals = np.array([d.get(ax_key, 0) for d in imu[:n_samples]])
             if len(vals) < 128:
                 continue
-
-            # DC 제거 + 해닝 윈도우
             vals = vals - np.mean(vals)
             window = np.hanning(len(vals))
             fft_result = np.fft.rfft(vals * window)
             freqs = np.fft.rfftfreq(len(vals), d=1.0/fs)
             magnitude = np.abs(fft_result) * 2.0 / len(vals)
-
-            # 1Hz ~ Nyquist
             mask = freqs >= 1.0
             fft_results[ax_name] = {
                 'freqs': freqs[mask],
@@ -1748,21 +1937,20 @@ class Analyzer:
         if not fft_results:
             return
 
-        # 각 축의 피크 주파수 찾기
+        self.fft_results = fft_results
+
         peaks = {}
         for ax, data in fft_results.items():
             mag = data['magnitude']
             freq = data['freqs']
             if len(mag) < 5:
                 continue
-            # 상위 3개 피크
             peak_indices = np.argsort(mag)[-3:][::-1]
             peaks[ax] = [(round(float(freq[i]), 1), round(float(mag[i]), 4)) for i in peak_indices]
 
         self.fft_peaks = peaks
         self.fft_fs = round(fs, 1)
 
-        # 모든 축의 1위 피크 주파수
         all_peaks = []
         for ax, pk_list in peaks.items():
             if pk_list:
@@ -1772,18 +1960,49 @@ class Analyzer:
             return
 
         dominant = max(all_peaks, key=lambda x: x[2])
-        detail = f'샘플링: {fs:.0f}Hz, {n_samples}샘플\n'
+        detail = f'[일반 IMU FFT — 저주파 분석]\n'
+        detail += f'샘플링: {fs:.0f}Hz, {n_samples}샘플 (나이퀴스트: {fs/2:.0f}Hz)\n'
+        detail += f'주의: 고주파 진동(80~300Hz) 분석에는 Batch IMU 필요\n'
+        detail += f'  → INS_LOG_BAT_MASK=1 설정 후 재비행 권장\n\n'
         for ax, pk_list in peaks.items():
             detail += f'  {ax}축: ' + ', '.join(f'{f:.0f}Hz({m:.3f})' for f, m in pk_list) + '\n'
 
-        # 프롭 회전 주파수 범위 (보통 50~200Hz)
         dom_freq = dominant[1]
         if dom_freq > 30 and dominant[2] > 0.5:
             self._add('WARN', f'진동 피크 {dom_freq:.0f}Hz ({dominant[0]}축)',
                       detail,
-                      f'INS_HNTCH_FREQ={dom_freq:.0f} 노치필터 설정 권장, 프롭 밸런싱')
+                      self._suggest_notch_filter(dom_freq, peaks))
         else:
             self._add('OK', f'FFT 피크 {dom_freq:.0f}Hz ({dominant[0]}축)', detail)
+
+    def _suggest_notch_filter(self, dom_freq: float, peaks: dict) -> str:
+        """노치필터 설정 자동 추천"""
+        bw = max(dom_freq * 0.5, 10)
+        suggestion = f'── 노치필터 설정 추천 ──\n'
+        suggestion += f'INS_HNTC2_ENABLE = 1\n'
+        suggestion += f'INS_HNTC2_FREQ = {dom_freq:.0f}\n'
+        suggestion += f'INS_HNTC2_BW = {bw:.0f}\n'
+
+        # 2차 하모닉 체크
+        harmonics = []
+        for ax, pk_list in peaks.items():
+            for f, m in pk_list:
+                ratio = f / dom_freq if dom_freq > 0 else 0
+                if 1.8 < ratio < 2.2 and m > 0.01:
+                    harmonics.append(f)
+
+        if harmonics:
+            suggestion += f'INS_HNTC2_HMNCS = 3  (2차 하모닉 {harmonics[0]:.0f}Hz 감지)\n'
+        else:
+            suggestion += f'INS_HNTC2_HMNCS = 1\n'
+
+        suggestion += f'\n동적 추적 모드:\n'
+        suggestion += f'  INS_HNTC2_MODE = 1  (스로틀 연동)\n'
+        suggestion += f'  INS_HNTC2_MODE = 2  (RPM 센서 연동)\n'
+        suggestion += f'  INS_HNTC2_MODE = 3  (ESC 텔레메트리 연동)\n'
+        suggestion += f'  INS_HNTC2_MODE = 4  (In-Flight FFT 연동 — H7 FC 권장)\n'
+        suggestion += f'\n물리적 대응: 프롭 밸런싱, 모터 마운트 댐퍼 점검'
+        return suggestion
 
     # ══════════════════════════════════════════════
     # 종합 분석 엔진 — 이벤트 타임라인 + 근본 원인 + 비행 복기
@@ -2718,6 +2937,83 @@ class ChartGen:
         self._add_err_markers(ax)
         return self._save(fig, 'phases')
 
+    def fft_spectrum(self):
+        """FFT 스펙트럼 차트 — Batch IMU 또는 일반 IMU"""
+        # Batch IMU FFT가 있으면 우선 사용
+        fft_data = self.a.batch_fft_results or self.a.fft_results
+        if not fft_data:
+            return None
+
+        is_batch = bool(self.a.batch_fft_results)
+        n_axes = len(fft_data)
+        fig, axs = plt.subplots(n_axes, 1, figsize=(12, 3 * n_axes), sharex=True)
+        if n_axes == 1:
+            axs = [axs]
+
+        ax_colors = {'X': C_RED, 'Y': C_GREEN, 'Z': C_BLUE}
+        peaks = self.a.fft_peaks
+
+        for i, (ax_name, data) in enumerate(sorted(fft_data.items())):
+            ax = axs[i]
+            self._apply_style(ax)
+            ax.set_facecolor(C_BG_DARK)
+
+            freqs = data['freqs']
+            mag = data['magnitude']
+            color = ax_colors.get(ax_name, C_CYAN)
+
+            # 스펙트럼 라인
+            ax.fill_between(freqs, mag, alpha=0.3, color=color)
+            ax.plot(freqs, mag, color=color, linewidth=0.8, label=f'{ax_name}축')
+
+            # 피크 마커
+            if ax_name in peaks:
+                for j, (pf, pm) in enumerate(peaks[ax_name][:3]):
+                    ax.axvline(pf, color=C_YELLOW, ls='--', lw=0.7, alpha=0.6)
+                    ax.annotate(f'{pf:.0f}Hz', xy=(pf, pm), xytext=(pf+5, pm),
+                               fontsize=8, color=C_YELLOW, fontweight='bold',
+                               arrowprops=dict(arrowstyle='->', color=C_YELLOW, lw=0.8))
+
+            ax.set_ylabel(f'{ax_name}축', fontsize=9, color=color)
+            ax.legend(fontsize=7, loc='upper right', facecolor=C_BG_DARK,
+                      edgecolor=C_GRID, labelcolor=C_TEXT)
+
+        source = 'Batch IMU 고주파' if is_batch else '일반 IMU'
+        fs = self.a.fft_fs
+        axs[0].set_title(f'FFT 진동 스펙트럼 ({source}, {fs:.0f}Hz 샘플링)',
+                         color=C_TEXT, fontsize=11, fontweight='bold')
+        axs[-1].set_xlabel('주파수 (Hz)', fontsize=9, color=C_TEXT)
+        fig.tight_layout(pad=1.0)
+        return self._save(fig, 'fft_spectrum')
+
+    def fft_inflight_timeline(self):
+        """In-Flight FFT 타임라인 — FC가 비행 중 감지한 주파수 변화"""
+        if not self.a.inflight_fft or len(self.a.inflight_fft) < 5:
+            return None
+
+        t0 = self.t0
+        ts = np.array([f['ts'] - t0 for f in self.a.inflight_fft])
+        freqs = np.array([f['peak_hz'] for f in self.a.inflight_fft])
+
+        fig, ax = plt.subplots(figsize=(12, 3))
+        self._apply_style(ax, 'In-Flight FFT — 실시간 진동 주파수 추적', 'Hz')
+
+        # 산점도 + 선
+        ax.scatter(ts, freqs, c=C_CYAN, s=4, alpha=0.6, zorder=3)
+        ax.plot(ts, freqs, color=C_CYAN, linewidth=0.5, alpha=0.4)
+
+        # 평균선
+        avg = np.mean(freqs)
+        ax.axhline(avg, color=C_YELLOW, ls='--', lw=1, alpha=0.7,
+                   label=f'평균: {avg:.0f}Hz')
+
+        ax.legend(fontsize=8, loc='upper right', facecolor=C_BG_DARK,
+                  edgecolor=C_GRID, labelcolor=C_TEXT)
+        self._add_mode_bands(ax)
+        self._add_err_markers(ax)
+        ax.set_xlabel('시간 (초)', fontsize=8)
+        return self._save(fig, 'fft_inflight')
+
     def generate_all(self) -> dict:
         charts = {}
         for name, func in [('mode', self.mode_timeline), ('alt', self.altitude),
@@ -2726,7 +3022,9 @@ class ChartGen:
                             ('rcout', self.rcout), ('ekf', self.ekf),
                             ('wind', self.wind), ('pid', self.pid_tracking),
                             ('landing', self.landing), ('esc', self.esc),
-                            ('hover', self.hover_scatter), ('phases', self.flight_phases)]:
+                            ('hover', self.hover_scatter), ('phases', self.flight_phases),
+                            ('fft_spectrum', self.fft_spectrum),
+                            ('fft_inflight', self.fft_inflight_timeline)]:
             try:
                 path = func()
                 if path: charts[name] = path
@@ -2754,6 +3052,8 @@ class ReportBuilder:
         'esc': 'ESC 텔레메트리 (RPM/온도)',
         'hover': '호버 위치 안정성',
         'phases': '비행 구간 자동 분류',
+        'fft_spectrum': 'FFT 진동 스펙트럼 분석',
+        'fft_inflight': 'In-Flight FFT 실시간 추적',
     }
 
     def __init__(self, analyzer: Analyzer, charts: dict, out_path: str):
